@@ -67,3 +67,49 @@ buyer ask (parsed) → calc /quote → spine /quotes (S5)
 - calc/spine: python 3.12 + FastAPI + uv venvs. Containerize later with the
   existing Dockerfiles.
 - PDF artifact naming: quote_spike_sample.pdf = proof, keep in repo.
+
+---
+
+## Changelog after the spike
+
+### 2026-08-19 — S3 owns the tier (flowchart X1 fix), repo put under git
+
+**The bug:** customer tier was declared twice — `spine.customers.tier` (S3)
+*and* `pricing_rules.customer_tiers[].customer_ids` (S2) — and calc read only
+the S2 copy. Any customer spine created at runtime priced as if untiered until
+a human hand-edited the rules JSON. Two opinions about a customer is exactly
+what X1 forbids.
+
+**The fix:**
+- S3 says WHICH tier a customer is in. S2 says what that tier COSTS. Nothing
+  says both.
+- `QuoteRequest.customer_tier` / `POST /quote {"customer_tier": …}` — the
+  caller (dify) passes what `spine /resolve` returned, per B2-1.
+- `customer_id` is carried for S5 linkage and tracing only; it no longer
+  moves the price. Test T7c pins this.
+- rules: `customer_ids` removed, explicit `new` tier (factor 1.0) added,
+  `schema_version` 1 → 2.
+- Unknown tier → `NotComputable` with a rules-gap hint → B5. No guessed
+  factor, ever (Principle #5). Tests T7b / E2E-4b pin this.
+
+calc 22/22, e2e 13/13. Reference quote still $4360.50 — price-neutral.
+
+**Also:** `git init` + first commit. Until now S7 ("config-as-code repo") and
+S2 ("version controlled") were aspirational — there was no history at all.
+
+### Known-stale, not yet fixed (see next session)
+
+1. `calc/render_quote.js` contradicts trap #1 above — its header argues for
+   local npm carbone CE, which is the path that *corrupts the template*.
+   Rewrite against carbone-ee docker + soffice, or delete it.
+2. `compose/docker-compose.appliance.yml` has drifted from what actually
+   runs: carbone mapped to in-container 3000 (it's 4000), image
+   `atendai/evolution-api` (running: `evoapicloud/evolution-api`, plus a
+   postgres compose doesn't declare), and no dify / chatwoot / postiz / n8n.
+   The live stack was hand-started, not stamped.
+3. `.gitignore` excludes `spine/templates/*.pdf`, but this log says to keep
+   `quote_spike_sample.pdf` as proof. Pick one.
+4. S8 (`events`) has a schema and no writer — nothing logs escalations,
+   session drops, or quote events, so X3/X5 have no data to stand on.
+5. `spine /resolve` with neither wa_jid nor email always creates a new
+   customer — no dedupe. Source of the stray `Walk-in Buyer` rows.
