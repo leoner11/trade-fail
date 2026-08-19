@@ -1,0 +1,128 @@
+{
+  "schema_version": 2,
+  "currency": "USD",
+  "validity_days": 30,
+  "material_base_prices": [
+    {
+      "name": "Gold Foil/Wood",
+      "base_price": 85,
+      "bulk_price": 45,
+      "note": "Classic style for authorization plaques"
+    },
+    {
+      "name": "Crystal/Glass",
+      "base_price": 120,
+      "bulk_price": 65,
+      "note": "Transparent and shiny for anniversaries"
+    },
+    {
+      "name": "Metal Casting",
+      "base_price": 180,
+      "bulk_price": 90,
+      "note": "Heavy texture with relief, requires mold fee"
+    },
+    {
+      "name": "Acrylic/Composite",
+      "base_price": 55,
+      "bulk_price": 28,
+      "note": "Colorful and various shapes"
+    }
+  ],
+  "size_coefficients": [
+    {
+      "size": "S",
+      "coefficient": 0.8,
+      "note": "< 15cm"
+    },
+    {
+      "size": "M",
+      "coefficient": 1.0,
+      "note": "15cm - 25cm"
+    },
+    {
+      "size": "L",
+      "coefficient": 1.5,
+      "note": "25cm - 40cm"
+    },
+    {
+      "size": "XL",
+      "coefficient": 0,
+      "note": "> 40cm — quote manually"
+    }
+  ],
+  "process_fees": [
+    {
+      "name": "3D Laser Engraving",
+      "fee": 20,
+      "note": "Only for crystal"
+    },
+    {
+      "name": "UV Color Printing",
+      "fee": 10,
+      "note": "Good for complex logos"
+    },
+    {
+      "name": "Metal Etching + Paint",
+      "fee": 30,
+      "note": "Durable, never fade"
+    },
+    {
+      "name": "Gold Foil Stamping",
+      "fee": 5,
+      "note": "For text on wood"
+    },
+    {
+      "name": "Premium Wooden Box",
+      "fee": 35,
+      "note": "Gift packaging"
+    },
+    {
+      "fee": 25,
+      "name": "Heavy Marble Base",
+      "note": "More stable and premium"
+    }
+  ],
+  "quantity_discounts": [
+    {
+      "min_qty": 1,
+      "discount_pct": 0,
+      "label": "1-5 pcs full price"
+    },
+    {
+      "min_qty": 6,
+      "discount_pct": 5,
+      "label": "6-20 pcs 95%"
+    },
+    {
+      "min_qty": 21,
+      "discount_pct": 15,
+      "label": "21-100 pcs 85%"
+    },
+    {
+      "min_qty": 101,
+      "discount_pct": 30,
+      "label": "101+ pcs 70%"
+    }
+  ],
+  "customer_tiers": [
+    {
+      "name": "new",
+      "price_factor": 1.0,
+      "payment_terms": "T/T 100% before shipment"
+    },
+    {
+      "name": "repeat",
+      "price_factor": 0.95,
+      "payment_terms": "30% dep, 70% pre-ship"
+    },
+    {
+      "name": "distributor",
+      "price_factor": 0.9,
+      "payment_terms": "T/T 60 days"
+    }
+  ],
+  "authority": {
+    "max_discount_pct": 15,
+    "note": "Agent may apply qty-tier discounts automatically; anything beyond this cap requires BOSS approval (flowchart B6)."
+  }
+}

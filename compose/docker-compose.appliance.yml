@@ -1,0 +1,50 @@
+# ▣ The Appliance — one stack per client (flowchart S7 blueprint).
+# Usage: docker compose -f compose/docker-compose.appliance.yml up -d
+# MJCX-owned services are built from ../../ (calc, spine). OSS runs unmodified.
+name: trade-agent
+
+services:
+  # ---------- OUR CODE ----------
+  calc:
+    build: ../calc
+    ports: ["8100:8100"]
+    environment:
+      RULES_PATH: /data/rules/pricing_rules.example.json
+    volumes:
+      - ../spine/rules:/data/rules:ro
+    restart: unless-stopped
+
+  spine:
+    build: ../spine
+    ports: ["8101:8101"]
+    volumes:
+      - spine-data:/data
+    restart: unless-stopped
+
+  # ---------- OSS (unmodified, per WEAVE_PLAN license rules) ----------
+  evolution-api:
+    image: atendai/evolution-api:latest
+    ports: ["8080:8080"]
+    environment:
+      AUTHENTICATION_API_KEY: change-me-mjcx
+      DATABASE_ENABLED: "false"
+      DATABASE_PROVIDER: postgresql
+      CACHE_REDIS_ENABLED: "false"
+      CACHE_REDIS_URI: redis://redis:6379/1
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  carbone:
+    image: carbone/carbone-ee:latest
+    ports: ["8200:3000"]       # carbone-ee listens on 3000 in-container? verify at runtime
+    restart: unless-stopped
+
+  # dify + chatwoot + postiz get enabled per-spike as resources allow (16GB host):
+  # see compose/docker-compose.dify.yml (from dify/docker/docker-compose-template.yaml)
+  # and chatwoot/docker-compose.production.yaml in the pulled repos.
+
+volumes:
+  spine-data:
