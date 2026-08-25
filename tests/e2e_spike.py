@@ -74,14 +74,15 @@ try:
         "customer_id": who["customer"]["customer_id"],
         "customer_tier": who["customer"]["tier"],
         "lines": [
-            {"material": "Metal Casting", "size": "L", "qty": 12,
-             "processes": ["Metal Etching + Paint", "Premium Wooden Box"]},
-            {"material": "Crystal/Glass", "size": "M", "qty": 12, "processes": ["3D Laser Engraving"]},
+            {"material": "DG-50", "size": "STD", "qty": 2},
+            {"material": "ATS-50", "size": "STD", "qty": 5},
         ],
     })
     check("status OK", r["status"] == "OK", json.dumps(r)[:150])
     if r["status"] == "OK":
-        check("total = 4360.5", abs(r["quote"]["total"] - 4360.5) < 0.01, str(r["quote"]["total"]))
+        # DG-50 2×5200×0.9 = 9360 · ATS-50 5×420×0.9 = 1890 · qty tier 6%
+        check("total = 10575.0", abs(r["quote"]["total"] - 10575.0) < 0.01,
+              str(r["quote"]["total"]))
         check("has valid_until", bool(r["quote"]["valid_until"]))
 except Exception as e:
     check("calc /quote reachable — is uvicorn on 8100 up?", False, str(e))
@@ -113,7 +114,8 @@ try:
     qr = post(f"{CALC}/quote", {
         "customer_id": "cus_repeat_001",
         "customer_tier": "repeat",
-        "lines": [{"material": "Gold Foil/Wood", "size": "M", "qty": 8, "processes": ["Gold Foil Stamping"]}],
+        "lines": [{"material": "DG-30", "size": "STD", "qty": 1,
+                   "processes": ["Extended Warranty 2 Years"]}],
     })
     s = post(f"{SPINE}/quotes", {
         "customer_id": "cus_repeat_001",

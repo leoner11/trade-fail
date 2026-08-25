@@ -68,6 +68,10 @@ CASES = [
     # bilingual: CN buyer (the product is CN/EN by spec)
     ("你们的50kVA静音发电机组多少钱?要100台。", "PRICE_Q", "zh"),
     ("请问DG-100的额定电压是多少?", "SPEC_Q", "zh"),
+    # polite closure — must NOT fall into GREETING's sales pitch (real-chat bug)
+    ("Thank you so much, that's all!", "THANKS", "en"),
+    ("好吧，谢谢", "THANKS", "zh"),
+    ("Terima kasih banyak pak", "THANKS", "id"),
 ]
 
 
