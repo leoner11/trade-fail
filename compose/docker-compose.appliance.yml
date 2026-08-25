@@ -1,50 +1,225 @@
-# ▣ The Appliance — one stack per client (flowchart S7 blueprint).
-# Usage: docker compose -f compose/docker-compose.appliance.yml up -d
-# MJCX-owned services are built from ../../ (calc, spine). OSS runs unmodified.
+# ▣ O1 — THE APPLIANCE STAMP: one stack per client, one command (S7 blueprint).
+#
+#   docker compose -f compose/docker-compose.appliance.yml up -d
+#
+# Covers every box of the flowchart EXCEPT dify: the brain boots from its own
+# repo (pull_all_repo_here/glue/dify/docker, ~15 containers) — keep it a
+# separate deployment and point glue at it with DIFY_BASE_URL + USE_DIFY=1.
+# Everything here is self-contained; secrets come from ../.env (gitignored):
+#   GLM_API_KEY GLM_BASE_URL GLM_MODEL EVO_API_KEY CHATWOOT_* STAFF_WHATSAPP
+#   BOSS_WHATSAPP FOLLOWUP_HOURS SLA_HOURS COMPANY_NAME DEFAULT_*
+#
+# Post-up checklist (first boot only) — see runbooks/cold-start.md §stamp:
+#   1. WhatsApp QR: GET /instance/connect/{instance} on evo :8080
+#   2. chatwoot: exec rails db:setup, seed admin+bridge users, create inbox
+#      named after the instance w/ webhook http://evo:8080/chatwoot/webhook/...
+#   3. evo: POST /chatwoot/set/{instance} + webhook → glue /webhook/evo
+#   4. n8n: import n8n/workflows/*.json + activate
+#
+# Single flat network — every service has a UNIQUE name/alias, so no DNS
+# collisions (spike traps #16–18). Chatwoot apps use cw-postgres explicitly.
+
 name: trade-agent
 
 services:
   # ---------- OUR CODE ----------
   calc:
     build: ../calc
-    ports: ["8100:8100"]
+    ports: ["127.0.0.1:8100:8100"]
     environment:
       RULES_PATH: /data/rules/pricing_rules.example.json
     volumes:
       - ../spine/rules:/data/rules:ro
+    networks: [appliance]
     restart: unless-stopped
 
   spine:
     build: ../spine
-    ports: ["8101:8101"]
+    ports: ["127.0.0.1:8101:8101"]
     volumes:
       - spine-data:/data
+    networks: [appliance]
     restart: unless-stopped
 
-  # ---------- OSS (unmodified, per WEAVE_PLAN license rules) ----------
-  evolution-api:
-    image: atendai/evolution-api:latest
-    ports: ["8080:8080"]
+  glue:
+    build: ../glue
+    ports: ["127.0.0.1:8102:8102"]
+    env_file: ../.env
     environment:
-      AUTHENTICATION_API_KEY: change-me-mjcx
-      DATABASE_ENABLED: "false"
+      EVO_URL: http://evo:8080
+      SPINE_URL: http://spine:8101
+      CALC_URL: http://calc:8100
+      CARBONE_URL: http://carbone:4000
+      CHATWOOT_URL: http://chatwoot:3000
+    networks: [appliance]
+    restart: unless-stopped
+
+  console:
+    build:
+      context: ..
+      dockerfile: console/Dockerfile   # context = repo root (nginx.conf path)
+    ports: ["127.0.0.1:8090:80"]       # THE client-facing UI — Phase O + ops
+    depends_on: [spine, glue]
+    networks: [appliance]
+    restart: unless-stopped
+
+  # ---------- channels ----------
+  postgres:
+    image: postgres:16-alpine          # evolution-api's DB; alias = service name
+    environment:
+      POSTGRES_USER: evo
+      POSTGRES_PASSWORD: ${EVO_DB_PASSWORD:-evo}
+      POSTGRES_DB: evolution
+    volumes:
+      - evo-pg-data:/var/lib/postgresql/data
+    networks: [appliance]
+    restart: unless-stopped
+
+  evo:
+    image: evoapicloud/evolution-api:latest   # NOT atendai/* (trap)
+    ports: ["8080:8080"]
+    depends_on: [postgres]
+    environment:
+      AUTHENTICATION_API_KEY: ${EVO_API_KEY:-mjcx-spike-key}
       DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgresql://evo:${EVO_DB_PASSWORD:-evo}@postgres:5432/evolution
       CACHE_REDIS_ENABLED: "false"
-      CACHE_REDIS_URI: redis://redis:6379/1
+      CACHE_LOCAL_ENABLED: "true"
+      CHATWOOT_ENABLED: "true"                  # global switch for A6 bridge
+    networks: [appliance]
     restart: unless-stopped
 
-  redis:
-    image: redis:7-alpine
+  chatwoot-postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: chatwoot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${CHATWOOT_DB_PASSWORD:-chatwoot}
+    volumes:
+      - chatwoot-pg-data:/var/lib/postgresql/data
+    networks:
+      appliance:
+        aliases: [cw-postgres]           # unique alias — bare "postgres" above!
     restart: unless-stopped
 
+  chatwoot-redis:
+    image: redis:alpine
+    command: ["sh", "-c", "redis-server --requirepass \"${CHATWOOT_REDIS_PASSWORD:-chatwoot}\""]
+    volumes:
+      - chatwoot-redis-data:/data
+    networks: [appliance]
+    restart: unless-stopped
+
+  chatwoot-rails:
+    image: chatwoot/chatwoot:latest
+    depends_on: [chatwoot-postgres, chatwoot-redis]
+    ports: ["127.0.0.1:3000:3000"]       # staff inbox UI
+    entrypoint: docker/entrypoints/rails.sh
+    command: ["bundle", "exec", "rails", "s", "-p", "3000", "-b", "0.0.0.0"]
+    environment: &chatwoot-env
+      NODE_ENV: production
+      RAILS_ENV: production
+      INSTALLATION_ENV: docker
+      SECRET_KEY_BASE: ${CHATWOOT_SECRET_KEY_BASE:-replace_with_openssl_rand_hex_32}
+      FRONTEND_URL: ${CHATWOOT_FRONTEND_URL:-http://localhost:3000}
+      ENABLE_ACCOUNT_SIGNUP: "false"
+      REDIS_URL: redis://:${CHATWOOT_REDIS_PASSWORD:-chatwoot}@chatwoot-redis:6379
+      REDIS_PASSWORD: ${CHATWOOT_REDIS_PASSWORD:-chatwoot}
+      POSTGRES_HOST: cw-postgres
+      POSTGRES_USERNAME: postgres
+      POSTGRES_PASSWORD: ${CHATWOOT_DB_PASSWORD:-chatwoot}
+      RAILS_MAX_THREADS: "5"
+      ACTIVE_STORAGE_SERVICE: local
+      SAFE_FETCH_ALLOW_PRIVATE_NETWORK: "true"   # webhooks stay in-docker (trap #18)
+      MAILER_SENDER_EMAIL: MJCX Appliance <accounts@localhost>
+      RAILS_LOG_TO_STDOUT: "true"
+      LOG_LEVEL: info
+    volumes:
+      - chatwoot-storage:/app/storage
+    networks: [appliance]
+    restart: unless-stopped
+
+  chatwoot-sidekiq:
+    image: chatwoot/chatwoot:latest
+    depends_on: [chatwoot-postgres, chatwoot-redis]
+    command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
+    environment: *chatwoot-env           # webhooks fire HERE, not rails (trap #17)
+    volumes:
+      - chatwoot-storage:/app/storage
+    networks: [appliance]
+    restart: unless-stopped
+
+  # ---------- documents, scheduler & social ----------
   carbone:
     image: carbone/carbone-ee:latest
-    ports: ["8200:3000"]       # carbone-ee listens on 3000 in-container? verify at runtime
+    ports: ["127.0.0.1:8200:4000"]       # in-container port IS 4000 (trap #3)
+    networks: [appliance]
     restart: unless-stopped
 
-  # dify + chatwoot + postiz get enabled per-spike as resources allow (16GB host):
-  # see compose/docker-compose.dify.yml (from dify/docker/docker-compose-template.yaml)
-  # and chatwoot/docker-compose.production.yaml in the pulled repos.
+  postiz-postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postiz-user
+      POSTGRES_PASSWORD: ${POSTIZ_DB_PASSWORD:-postiz-pwd}
+      POSTGRES_DB: postiz-db
+    volumes:
+      - postiz-pg-data:/var/lib/postgresql/data
+    networks: [appliance]
+    restart: unless-stopped
+
+  postiz-redis:
+    image: redis:7-alpine
+    volumes:
+      - postiz-redis-data:/data
+    networks: [appliance]
+    restart: unless-stopped
+
+  postiz:
+    image: ghcr.io/gitroomhq/postiz-app:latest   # serves on 5000, NOT 3000 (trap #25)
+    depends_on: [postiz-postgres, postiz-redis]
+    ports: ["127.0.0.1:13000:5000"]      # staff social UI on :13000
+    environment:
+      JWT_SECRET: ${POSTIZ_JWT_SECRET:-replace_with_openssl_rand_hex_48}
+      BACKEND_INTERNAL_URL: http://localhost:5000
+      IS_GENERAL: "true"
+      NEXT_PUBLIC_BACKEND_URL: ${POSTIZ_PUBLIC_URL:-http://localhost:13000}/public/v1
+      FRONTEND_NX_URL: ${POSTIZ_PUBLIC_URL:-http://localhost:13000}
+      NX_ADD_PLUGINS: "false"
+      DATABASE_URL: postgresql://postiz-user:${POSTIZ_DB_PASSWORD:-postiz-pwd}@postiz-postgres:5432/postiz-db?schema=public&connection_limit=20&pool_timeout=60&connect_timeout=15
+      REDIS_URL: redis://postiz-redis:6379
+      BACKEND_URL: ${POSTIZ_PUBLIC_URL:-http://localhost:13000}
+      NODE_ENV: production
+    volumes:
+      - postiz-config:/config/
+      - postiz-uploads:/uploads/
+    networks: [appliance]
+    restart: unless-stopped
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    ports: ["127.0.0.1:5678:5678"]
+    environment:
+      GENERIC_TIMEZONE: Asia/Jakarta
+      TZ: Asia/Jakarta
+      N8N_SECURE_COOKIE: "false"
+    volumes:
+      - n8n-data:/home/node/.n8n
+    extra_hosts: ["host.docker.internal:host-gateway"]  # reach glue ticks if host-run
+    networks: [appliance]
+    restart: unless-stopped
+
+networks:
+  appliance:
+    driver: bridge
 
 volumes:
   spine-data:
+  evo-pg-data:
+  chatwoot-pg-data:
+  chatwoot-redis-data:
+  chatwoot-storage:
+  n8n-data:
+  postiz-pg-data:
+  postiz-redis-data:
+  postiz-config:
+  postiz-uploads:

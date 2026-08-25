@@ -1,0 +1,43 @@
+# A6 spike override for channels/chatwoot/docker-compose.production.yaml.
+# Repos stay whole (rule #4): this file lives in the product repo, boot with
+#   docker compose -f <clone>/channels/chatwoot/docker-compose.production.yaml \
+#                  -f compose/chatwoot.override.yaml up -d
+#
+# - joins the existing evo-net so evolution-api and chatwoot reach each other;
+#   rails is http://chatwoot:3000 on evo-net.
+# - rails AND sidekiq join evo-net: chatwoot's api-inbox webhooks to
+#   evolution-api fire from sidekiq, not rails ("Could not resolve hostname
+#   'evo'" otherwise). Hostname safety: the DB is reached via the unique
+#   alias cw-postgres (evo-postgres also carries the alias "postgres" on
+#   evo-net — pointing at bare "postgres" resolves the WRONG db), redis by
+#   service name; multi-homing therefore cannot collide with evo containers.
+# - drops host ports for postgres/redis (!override): 5432/6379 are taken on
+#   the host and nothing outside evo-net needs them; rails keeps
+#   127.0.0.1:3000 for the staff UI.
+services:
+  rails:
+    environment:
+      POSTGRES_HOST: cw-postgres
+    networks:
+      default:
+      evo-net:
+        aliases: [chatwoot]
+  sidekiq:
+    environment:
+      POSTGRES_HOST: cw-postgres
+    networks:
+      default:
+      evo-net:
+  postgres:
+    ports: !override []
+    # stock yaml ships an EMPTY password; interpolate the real one from the
+    # clone's untracked .env so it matches what rails/sidekiq authenticate with.
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    networks:
+      default:
+        aliases: [cw-postgres]
+
+networks:
+  evo-net:
+    external: true

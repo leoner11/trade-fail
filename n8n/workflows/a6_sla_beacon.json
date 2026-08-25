@@ -1,0 +1,61 @@
+{
+  "name": "A6 SLA beacon (15min)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "sla-trigger",
+      "name": "every 15min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8102/a6/sla_tick",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "sla-call",
+      "name": "glue /a6/sla_tick",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "every 15min": {
+      "main": [
+        [
+          {
+            "node": "glue /a6/sla_tick",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Jakarta"
+  },
+  "active": false,
+  "id": "a6-sla-beacon-001"
+}
