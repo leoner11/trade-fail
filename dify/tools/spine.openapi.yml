@@ -1,0 +1,121 @@
+# ▣ spine — S1/S3/S5 as dify custom tools (Phases A/B).
+# Identity resolution, catalog lookups, quote store.
+openapi: 3.0.1
+info:
+  title: MJCX spine
+  description: Source of truth — customer identity (S3), catalog (S1), quotes (S5).
+  version: 0.1.0
+servers:
+  - url: http://host.docker.internal:8101
+paths:
+  /resolve:
+    post:
+      operationId: resolve_identity
+      summary: Who is this buyer? Returns existing customer or creates one (A2-1).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                wa_jid:
+                  type: string
+                email:
+                  type: string
+                name:
+                  type: string
+                country:
+                  type: string
+                language:
+                  type: string
+      responses:
+        '200':
+          description: Resolved or created customer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    description: '"known" or "new"'
+                  customer:
+                    type: object
+                    description: Includes customer_id and tier (S3).
+  /catalog/{sku}:
+    get:
+      operationId: catalog_by_sku
+      summary: Structured product facts for one SKU (S1).
+      parameters:
+        - name: sku
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Catalog item with specs
+        '404':
+          description: Unknown SKU
+  /catalog:
+    get:
+      operationId: catalog_search
+      summary: Search catalog by name/SKU substring (S1).
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Matching items
+  /quotes:
+    post:
+      operationId: save_quote
+      summary: Persist a computed quote (S5). Status starts at draft.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customer_id, request_json, result_json, total]
+              properties:
+                customer_id:
+                  type: string
+                request_json:
+                  type: object
+                result_json:
+                  type: object
+                total:
+                  type: number
+                currency:
+                  type: string
+      responses:
+        '200':
+          description: Saved with quote_id
+  /quotes/{qid}/status:
+    post:
+      operationId: set_quote_status
+      summary: Move a quote through its status machine (S5).
+      parameters:
+        - name: qid
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [draft, sent, viewed, accepted, rejected, negotiating]
+      responses:
+        '200':
+          description: Updated

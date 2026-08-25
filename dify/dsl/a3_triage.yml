@@ -1,0 +1,278 @@
+app:
+  description: 'A3-1/A3-2: classify one buyer message (intent/language/urgency/sentiment/confidence)
+    and map to the Phase A route.'
+  icon: 🚦
+  icon_background: '#FFEAD5'
+  icon_type: emoji
+  mode: workflow
+  name: A3-1 Triage Classifier
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/zhipuai:0.0.33@a90640fd7217e023103e5cebc508a191340f7ad0702bcba5206610f1233b1280
+    version: null
+kind: app
+version: 0.7.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload: {}
+    sensitive_word_avoidance:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        sourceType: start
+        targetType: llm
+      id: edge-start-classify
+      source: start
+      sourceHandle: source
+      target: llm_classify
+      targetHandle: target
+      type: custom
+    - data:
+        isInIteration: false
+        sourceType: llm
+        targetType: code
+      id: edge-classify-route
+      source: llm_classify
+      sourceHandle: source
+      target: parse_route
+      targetHandle: target
+      type: custom
+    - data:
+        isInIteration: false
+        sourceType: code
+        targetType: end
+      id: edge-route-end
+      source: parse_route
+      sourceHandle: source
+      target: end
+      targetHandle: target
+      type: custom
+    nodes:
+    - data:
+        selected: false
+        title: Start
+        type: start
+        variables:
+        - label: query
+          max_length: 4000
+          options: []
+          required: true
+          type: paragraph
+          variable: query
+        - label: customer_tier
+          max_length: 48
+          options: []
+          required: false
+          type: text-input
+          variable: customer_tier
+      id: start
+      position:
+        x: 60
+        y: 260
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: Closed-enum classification. Never answers the buyer.
+        model:
+          completion_params:
+            temperature: 0
+          mode: chat
+          name: glm-4.5-air
+          provider: langgenius/zhipuai/zhipuai
+        prompt_template:
+        - id: a3-system
+          role: system
+          text: "\nYou are the triage classifier for a foreign-trade supplier's inbound\n\
+            message channel. You classify ONE buyer message. You never reply to it.\n\
+            \nReturn ONE JSON object, nothing else. No prose, no markdown fence.\n\
+            \nSchema:\n{\n  \"language\": \"<BCP-47-ish code of the BUYER's message:\
+            \ en, id, zh, es, ar, ...>\",\n  \"intent\": \"<one of: SPEC_Q | PRICE_Q\
+            \ | CUSTOM_ODM | COMPLAINT | SHIPPING | GREETING | THANKS | SPAM | OTHER>\"\
+            ,\n  \"urgency\": \"<low | normal | high>\",\n  \"sentiment\": \"<positive\
+            \ | neutral | negative>\",\n  \"confidence\": <0.0-1.0>\n}\n\nIntent definitions\
+            \ — pick the SINGLE best fit:\n- SPEC_Q      — asks about product facts:\
+            \ specs, models, dimensions, power,\n                certifications, MOQ,\
+            \ compatibility, materials, availability.\n- PRICE_Q     — asks what something\
+            \ costs, asks for a quote/quotation/\n                proforma, asks about\
+            \ discounts or payment terms on a price.\n- CUSTOM_ODM  — wants something\
+            \ NOT in the standard catalog: custom design,\n                OEM/ODM,\
+            \ private label, modified spec, bespoke engineering.\n- COMPLAINT   —\
+            \ reports a fault, damage, delay, or expresses anger about an\n      \
+            \          order already placed or delivered.\n- SHIPPING    — asks about\
+            \ freight, incoterms, lead time, logistics, customs,\n               \
+            \ tracking of an EXISTING order.\n- GREETING    — a bare hello / introduction\
+            \ / \"are you there\" with no request.\n                Opening a conversation.\
+            \ NOT a thank-you or goodbye.\n- THANKS      — a thank-you, acknowledgment,\
+            \ agreement, or goodbye with no\n                new request and no question:\
+            \ \"thanks\", \"ok thank you\",\n                \"that's all\", 谢谢 /\
+            \ 好的谢谢, \"terima kasih\", \"ok pak\".\n                Polite closure\
+            \ of a conversation thread.\n- SPAM        — marketing at us, phishing,\
+            \ crypto, recruitment, gibberish,\n                obvious bot noise.\n\
+            - OTHER       — a genuine business message that fits none of the above.\n\
+            \nRules that override the definitions:\n1. If the message is BOTH a price\
+            \ ask and a custom/ODM ask -> CUSTOM_ODM.\n   (Rules can't price a custom\
+            \ item; it must reach a human.)\n2. If the message contains ANY complaint\
+            \ or anger -> COMPLAINT, even if it\n   also asks a question. Anger routes\
+            \ to a human first, always.\n3. `language` is the language the BUYER wrote\
+            \ in, not the language of the\n   product names they used. A message in\
+            \ Indonesian citing an English model\n   number is \"id\".\n4. `urgency`\
+            \ is \"high\" for: complaints, stated deadlines, words like urgent/\n\
+            \   ASAP/segera/紧急, or a buyer chasing a previous unanswered message.\n\
+            5. `confidence` is your honest probability that `intent` is right. Below\
+            \ 0.7\n   the appliance escalates to a human instead of trusting you —\
+            \ so do NOT\n   inflate it. A wrong confident answer is worse than an\
+            \ admitted doubt.\n\nExamples:\n\nMessage: \"Hi, do you have the 50kVA\
+            \ silent genset? What is the noise level at 7m?\"\n{\"language\":\"en\"\
+            ,\"intent\":\"SPEC_Q\",\"urgency\":\"normal\",\"sentiment\":\"neutral\"\
+            ,\"confidence\":0.95}\n\nMessage: \"Berapa harga untuk 100 unit? Kirim\
+            \ ke Surabaya.\"\n{\"language\":\"id\",\"intent\":\"PRICE_Q\",\"urgency\"\
+            :\"normal\",\"sentiment\":\"neutral\",\"confidence\":0.93}\n\nMessage:\
+            \ \"Your generator exploded and burned my warehouse. I want answers NOW.\"\
+            \n{\"language\":\"en\",\"intent\":\"COMPLAINT\",\"urgency\":\"high\",\"\
+            sentiment\":\"negative\",\"confidence\":0.98}\n\nMessage: \"We need 500\
+            \ units with our own logo moulded into the casing, different voltage.\"\
+            \n{\"language\":\"en\",\"intent\":\"CUSTOM_ODM\",\"urgency\":\"normal\"\
+            ,\"sentiment\":\"neutral\",\"confidence\":0.9}\n\nMessage: \"好吧，谢谢\"\n\
+            {\"language\":\"zh\",\"intent\":\"THANKS\",\"urgency\":\"low\",\"sentiment\"\
+            :\"positive\",\"confidence\":0.95}\n\nMessage: \"Thank you! That's everything.\"\
+            \n{\"language\":\"en\",\"intent\":\"THANKS\",\"urgency\":\"low\",\"sentiment\"\
+            :\"positive\",\"confidence\":0.97}\n"
+        - id: a3-user
+          role: user
+          text: '{{#start.query#}}'
+        selected: false
+        title: Classify
+        type: llm
+        variables: []
+        vision:
+          enabled: false
+      id: llm_classify
+      position:
+        x: 380
+        y: 260
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+    - data:
+        code: "import json\nimport re\n\nENUM = {\"SPEC_Q\", \"PRICE_Q\", \"CUSTOM_ODM\"\
+          , \"COMPLAINT\",\n        \"SHIPPING\", \"GREETING\", \"THANKS\", \"SPAM\"\
+          , \"OTHER\"}\n\nROUTE = {\n    \"SPEC_Q\": \"spec\",\n    \"PRICE_Q\": \"\
+          price\",\n    \"CUSTOM_ODM\": \"escalate_custom\",\n    \"COMPLAINT\": \"\
+          escalate_complaint\",\n    \"SHIPPING\": \"human\",\n    \"GREETING\": \"\
+          greet\",\n    \"THANKS\": \"welcome\",\n    \"OTHER\": \"human\",\n    \"\
+          SPAM\": \"silence\",\n}\n\ndef main(classifier_output: str) -> dict:\n \
+          \   # reasoning models (glm-4.5-air / 4.7) prepend <think>...</think>;\n\
+          \    # its braces poison the greedy JSON match, so strip it first\n    text\
+          \ = re.sub(r\"<think>[\\s\\S]*?</think>\", \"\", classifier_output or \"\
+          \")\n    m = re.search(r\"\\{.*\\}\", text, re.S)\n    try:\n        d =\
+          \ json.loads(m.group(0)) if m else {}\n    except Exception:\n        d\
+          \ = {}\n\n    intent = d.get(\"intent\")\n    if intent not in ENUM:\n \
+          \       # closed enum: an unknown value is a bug, not a new category.\n\
+          \        return {\n            \"intent\": \"OTHER\",\n            \"language\"\
+          : (d.get(\"language\") or \"en\")[:8],\n            \"urgency\": d.get(\"\
+          urgency\") or \"normal\",\n            \"sentiment\": d.get(\"sentiment\"\
+          ) or \"neutral\",\n            \"confidence\": 0.0,\n            \"route\"\
+          : \"human\",\n            \"parse_ok\": False,\n        }\n\n    confidence\
+          \ = d.get(\"confidence\")\n    try:\n        confidence = round(float(confidence),\
+          \ 2)\n    except Exception:\n        confidence = 0.0\n\n    # Rule 3 of\
+          \ the appliance: below-threshold confidence -> human.\n    route = ROUTE[intent]\n\
+          \    if intent != \"SPAM\" and confidence < 0.7:\n        route = \"human\"\
+          \n\n    return {\n        \"intent\": intent,\n        \"language\": (d.get(\"\
+          language\") or \"en\")[:8],\n        \"urgency\": d.get(\"urgency\") or\
+          \ \"normal\",\n        \"sentiment\": d.get(\"sentiment\") or \"neutral\"\
+          ,\n        \"confidence\": confidence,\n        \"route\": route,\n    \
+          \    \"parse_ok\": True,\n    }\n"
+        code_language: python3
+        desc: Override rules + closed-enum guard live here, NOT in the LLM.
+        outputs:
+          confidence:
+            type: number
+          intent:
+            type: string
+          language:
+            type: string
+          parse_ok:
+            type: boolean
+          route:
+            type: string
+          sentiment:
+            type: string
+          urgency:
+            type: string
+        selected: false
+        title: Parse + Route
+        type: code
+        variables:
+        - value_selector:
+          - llm_classify
+          - text
+          variable: classifier_output
+      id: parse_route
+      position:
+        x: 720
+        y: 260
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+    - data:
+        desc: ''
+        outputs:
+        - value_selector:
+          - parse_route
+          - intent
+          variable: intent
+        - value_selector:
+          - parse_route
+          - language
+          variable: language
+        - value_selector:
+          - parse_route
+          - urgency
+          variable: urgency
+        - value_selector:
+          - parse_route
+          - sentiment
+          variable: sentiment
+        - value_selector:
+          - parse_route
+          - confidence
+          variable: confidence
+        - value_selector:
+          - parse_route
+          - route
+          variable: route
+        - value_selector:
+          - parse_route
+          - parse_ok
+          variable: parse_ok
+        selected: false
+        title: End
+        type: end
+      id: end
+      position:
+        x: 1060
+        y: 260
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+    viewport:
+      x: 0
+      y: 0
+      zoom: 0.7
+  rag_pipeline_variables: []
+

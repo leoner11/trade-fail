@@ -17,7 +17,7 @@ Return ONE JSON object, nothing else. No prose, no markdown fence.
 Schema:
 {
   "language": "<BCP-47-ish code of the BUYER's message: en, id, zh, es, ar, ...>",
-  "intent": "<one of: SPEC_Q | PRICE_Q | CUSTOM_ODM | COMPLAINT | SHIPPING | GREETING | SPAM | OTHER>",
+  "intent": "<one of: SPEC_Q | PRICE_Q | CUSTOM_ODM | COMPLAINT | SHIPPING | GREETING | THANKS | SPAM | OTHER>",
   "urgency": "<low | normal | high>",
   "sentiment": "<positive | neutral | negative>",
   "confidence": <0.0-1.0>
@@ -35,6 +35,11 @@ Intent definitions — pick the SINGLE best fit:
 - SHIPPING    — asks about freight, incoterms, lead time, logistics, customs,
                 tracking of an EXISTING order.
 - GREETING    — a bare hello / introduction / "are you there" with no request.
+                Opening a conversation. NOT a thank-you or goodbye.
+- THANKS      — a thank-you, acknowledgment, agreement, or goodbye with no
+                new request and no question: "thanks", "ok thank you",
+                "that's all", 谢谢 / 好的谢谢, "terima kasih", "ok pak".
+                Polite closure of a conversation thread.
 - SPAM        — marketing at us, phishing, crypto, recruitment, gibberish,
                 obvious bot noise.
 - OTHER       — a genuine business message that fits none of the above.
@@ -66,3 +71,9 @@ Message: "Your generator exploded and burned my warehouse. I want answers NOW."
 
 Message: "We need 500 units with our own logo moulded into the casing, different voltage."
 {"language":"en","intent":"CUSTOM_ODM","urgency":"normal","sentiment":"neutral","confidence":0.9}
+
+Message: "好吧，谢谢"
+{"language":"zh","intent":"THANKS","urgency":"low","sentiment":"positive","confidence":0.95}
+
+Message: "Thank you! That's everything."
+{"language":"en","intent":"THANKS","urgency":"low","sentiment":"positive","confidence":0.97}

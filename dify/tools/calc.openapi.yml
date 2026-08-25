@@ -1,0 +1,80 @@
+# ▣ calc — pricing engine as a dify custom tool (Phase B).
+# The LLM never computes; it CALLS this. Registered in dify via
+# POST /console/api/workspaces/current/tool-provider/api/add
+openapi: 3.0.1
+info:
+  title: MJCX calc
+  description: Deterministic pricing engine. LLM parses, calc computes.
+  version: 0.1.0
+servers:
+  - url: http://host.docker.internal:8100
+paths:
+  /quote:
+    post:
+      operationId: compute_quote
+      summary: Compute price from structured request. Returns status OK with quote or ESCALATE with rules gaps.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customer_id, lines]
+              properties:
+                customer_id:
+                  type: string
+                  description: From spine /resolve (S3). Trace only; tier moves price via customer_tier.
+                customer_tier:
+                  type: string
+                  enum: [new, repeat, distributor]
+                  description: Which tier the customer is in — comes from S3.
+                currency:
+                  type: string
+                incoterm:
+                  type: string
+                destination:
+                  type: string
+                lines:
+                  type: array
+                  items:
+                    type: object
+                    required: [material, size, qty]
+                    properties:
+                      material:
+                        type: string
+                        description: Must match an S2 material name exactly.
+                      size:
+                        type: string
+                        enum: [S, M, L, XL]
+                      qty:
+                        type: integer
+                      processes:
+                        type: array
+                        items:
+                          type: string
+                      notes:
+                        type: string
+      responses:
+        '200':
+          description: Quote computed or escalation-with-gaps
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    description: '"OK" or "ESCALATE"'
+                  quote:
+                    type: object
+                  gaps:
+                    type: array
+                    items:
+                      type: string
+  /health:
+    get:
+      operationId: calc_health
+      summary: Liveness check.
+      responses:
+        '200':
+          description: OK
