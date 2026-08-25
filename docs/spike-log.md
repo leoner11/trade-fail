@@ -1629,3 +1629,25 @@ calc **22/22** · e2e **13/13** · voice **PASS 8/8** (one zh-capability
 variation flake — canonical-opener case — green on rerun) · B4 **12/12** ·
 O5 auto **10/10 ×2 consecutive** (noise gate proven against its own flake) ·
 S9 **5/5**. Classify N/A (triage app untouched).
+
+### Session #13 cont. 4 (01:xx) — dashboard lag root-caused + fixed
+
+Leonard: "everytime a message comes, it always lags and nothing loads".
+Diagnosis:
+1. :8090 (caddy/stamp console) is NOT RUNNING — http=000. Only :5173 dev
+   mode lives. Any "dashboard" attempt at :8090 dead-ends. (Stamp build
+   still pending as a deployment step; dev-mode only so far.)
+2. THE REAL BUG: `/webhook/evo` is `async def` but called route()
+   INLINE — classify/dify/GLM/spine are blocking urllib calls, so one
+   inbound WhatsApp message froze the ENTIRE event loop for seconds
+   (dify timeout alone = 90s). Every console poll queued behind it.
+   Fix: `await asyncio.to_thread(route/send_text)`. Measured: console
+   polls 66-137ms DURING active routing (was: hung until routing done).
+
+Trap 41: **never block an async handler on sync I/O** — FastAPI only
+offloads sync `def` handlers; an `async def` that calls blocking HTTP
+starves the whole service. Any future glue endpoint touching organs must
+use to_thread or async clients.
+
+### Gates: calc 22/22 · e2e 13/13 · voice PASS · B4 12/12 · S9 5/5 ·
+O5 auto **10/10**.

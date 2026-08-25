@@ -35,6 +35,7 @@ Run:  env -u PYTHONPATH calc/.venv/bin/uvicorn mock_responder:app \
 Env:  reads .env (GLM_* , EVO_API_KEY). Optional overrides:
       EVO_URL, EVO_INSTANCE, SPINE_URL, CALC_URL, GLM_MODEL, DRY_RUN=1.
 """
+import asyncio
 import base64
 import json
 import math
@@ -2412,14 +2413,18 @@ async def webhook(request: Request):
         customer = {"customer_id": "anonymous", "tier": "new"}
 
     try:
-        reply = route(customer, text, remote)
+        # route() makes blocking LLM/spine HTTP calls (classify alone can
+        # take seconds; dify timeout 90s). Running it inline inside an
+        # async handler BLOCKED the event loop — every console poll hung
+        # whenever a WhatsApp message arrived. Offload to a worker thread.
+        reply = await asyncio.to_thread(route, customer, text, remote)
     except Exception as e:
         print(f"[err] routing failed, graceful dumb mode: {e}", flush=True)
         reply = ("Thanks for your message! Our assistant hiccupped — a human "
                  "will follow up here shortly.")
     if reply:
         try:
-            send_text(remote, reply)
+            await asyncio.to_thread(send_text, remote, reply)
             _remember(remote, reply, buyer_text=text)
         except Exception as e:
             # delivery failure must not 500 the webhook (X2: log and move on;
