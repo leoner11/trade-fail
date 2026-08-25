@@ -1,0 +1,27 @@
+@import './styles/tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-size: 16px;
+  }
+  body {
+    @apply bg-surface-base font-sans text-body text-text-primary antialiased;
+    font-feature-settings: 'tnum' 0;
+  }
+  ::placeholder {
+    @apply text-text-muted;
+  }
+}
+
+@layer utilities {
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  .mono {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', Consolas, monospace;
+  }
+}

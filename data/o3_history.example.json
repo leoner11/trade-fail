@@ -1,0 +1,31 @@
+[
+  {
+    "ref": "HIST-001",
+    "customer_tier": "new",
+    "lines": [
+      {"material": "DG-50", "size": "STD", "qty": 2, "processes": []}
+    ],
+    "quoted_total": 10088.00,
+    "note": "example entry — replace with REAL past quotes during O3"
+  },
+  {
+    "ref": "HIST-002",
+    "customer_tier": "distributor",
+    "lines": [
+      {"material": "DG-50", "size": "STD", "qty": 2},
+      {"material": "ATS-50", "size": "STD", "qty": 5}
+    ],
+    "quoted_total": 10575.00,
+    "note": "example entry"
+  },
+  {
+    "ref": "HIST-003",
+    "customer_tier": "repeat",
+    "lines": [
+      {"material": "DG-30", "size": "STD", "qty": 1,
+       "processes": ["Extended Warranty 2 Years"]}
+    ],
+    "quoted_total": 3952.00,
+    "note": "example entry"
+  }
+]

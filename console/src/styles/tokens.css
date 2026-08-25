@@ -1,0 +1,57 @@
+/*
+ * Appliance Console tokens — docs/console-plan.md §4.
+ * Per-client accent swap = override the brand-* vars (build arg from
+ * CLIENT_ACCENT). AI violet and the six status tones are NOT client-tunable.
+ */
+:root {
+  --brand-primary: #4f46e5;
+  --brand-primary-hover: #4338ca;
+  --brand-primary-wash: #eef2ff;
+
+  --sidebar-bg: #12142b;
+  --sidebar-hover: #1c1f3d;
+  --sidebar-active: #818cf8;
+  --sidebar-text: #a0aec0;
+
+  --ai-fg: #6d28d9;
+  --ai-dot: #8b5cf6;
+  --ai-wash: #f5f3ff;
+
+  --st-neutral-dot: #9ca3af;
+  --st-neutral-wash: #f3f4f6;
+  --st-neutral-fg: #4b5563;
+
+  --st-info-dot: #3b82f6;
+  --st-info-wash: #eff6ff;
+  --st-info-fg: #1d4ed8;
+
+  --st-attention-dot: #f59e0b;
+  --st-attention-wash: #fffbeb;
+  --st-attention-fg: #b45309;
+
+  --st-success-dot: #22c55e;
+  --st-success-wash: #f0fdf4;
+  --st-success-fg: #15803d;
+
+  --st-danger-dot: #ef4444;
+  --st-danger-wash: #fef2f2;
+  --st-danger-fg: #b91c1c;
+
+  --st-special-dot: #8b5cf6;
+  --st-special-wash: #f5f3ff;
+  --st-special-fg: #6d28d9;
+
+  --wa-dot: #25d366;
+
+  --surface-base: #f8f9fa;
+  --surface-card: #ffffff;
+  --surface-subtle: #f1f3f5;
+
+  --line: #e5e7eb;
+  --line-strong: #d1d5db;
+
+  --text-primary: #111827;
+  --text-secondary: #5b6472;
+  --text-muted: #8a929e;
+  --text-inverse: #ffffff;
+}
