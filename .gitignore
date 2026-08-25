@@ -6,3 +6,6 @@ node_modules/
 *.db
 spine/templates/*.pdf
 .DS_Store
+spine/quotes_pdf/
+*.bak
+data/o3_history.json
