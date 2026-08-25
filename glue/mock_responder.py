@@ -279,6 +279,100 @@ def _match_any(text: str, patterns: list[str]) -> bool:
 # catalog edits reach this check without a glue restart.
 _DOMAIN_CACHE: tuple[float, set[str]] = (0.0, set())
 
+# Natural-name -> SKU resolution ("the ats panel" -> ATS-50). Buyers rarely
+# type exact SKUs; without this they fall into the dify RAG workflow whose
+# KB-miss behaviour is a fake "let me check" (traps #34/#37). Data-driven
+# from S1 so it adapts to every client's catalog. Cached 5 min.
+_ALIAS_CACHE: tuple[float, list[tuple[str, str, int]]] = (0.0, [])
+_STOPWORDS = {"the", "a", "an", "and", "for", "with", "more", "about",
+              "know", "info", "information", "detail", "details", "product",
+              "products", "your", "our", "this", "that", "what", "panel"}
+
+
+def _catalog_alias_rows() -> list[dict]:
+    try:
+        items = _get(f"{SPINE_URL}/catalog")
+        return items.get("items") if isinstance(items, dict) else (items or [])
+    except Exception:
+        return []
+
+
+def _alias_sku(text: str) -> str | None:
+    """Resolve a natural product mention to ONE catalog SKU.
+
+    Scoring: word overlap between the buyer's content words and each item's
+    name+sku words. A single matching word only counts when it is UNIQUE to
+    that item across the catalog ('ats' -> ATS-50 here; 'genset' alone,
+    shared by three models, resolves to nothing)."""
+    import time as _t
+    now = _t.time()
+    ts, index = _ALIAS_CACHE
+    if not index or now - ts >= 300:
+        index = []
+        for r in _catalog_alias_rows():
+            words = {w for w in re.findall(r"[a-z0-9]+",
+                                           str(r.get("name", "")).lower())
+                     if w not in _STOPWORDS}
+            words.add(str(r.get("sku", "")).lower())
+            words.add(str(r.get("sku", "")).lower().replace("-", ""))
+            index.append((r["sku"], words, len(words)))
+        globals()["_ALIAS_CACHE"] = (now, index)
+    text_words = {w for w in re.findall(r"[a-z0-9]+", text.lower())
+                  if w not in _STOPWORDS}
+    # how many items share each word — uniqueness matters for 1-word hits
+    owners: dict[str, int] = {}
+    for _, words, _ in index:
+        for w in words:
+            owners[w] = owners.get(w, 0) + 1
+    best_sku, best_score = None, 0
+    for sku, words, size in index:
+        hits = sum(1 for w in text_words & words
+                   if len(w) >= 2 and (owners.get(w, 0) == 1 or len(w) > 3))
+        score = hits * 100 // max(size, 1)
+        if hits >= 1 and score > best_score:
+            best_sku, best_score = sku, score
+        elif hits and score == best_score and best_sku:
+            # tie between two items on weak evidence -> refuse to guess
+            best_sku = None
+    return best_sku
+
+
+_STALL_RE = re.compile(
+    r"check with|get back to|come back|look into|i'?ll find out"
+    r"|稍后(回复|核实|告诉)|同事(将|会)?(回复|核实|确认)|团队.*(核对|确认)", re.I)
+
+
+def _looks_like_stall(rag_text: str) -> bool:
+    """The dify spec workflow was prompted to stall on KB misses ("say you
+    will check with the team"). Until its DSL is reworded + reimported
+    (#34), glue detects that signature and repairs the flow: nothing that
+    promises a follow-up may leave the house without an armed escalation."""
+    return bool(_STALL_RE.search(rag_text or ""))
+
+
+def _catalog_reply(item: dict, lang: str, text: str, remote: str) -> str:
+    """Deterministic S1 answer for one SKU: generated weave over the facts,
+    static fallback otherwise. Arms offer-fulfillment state."""
+    facts = [f"{item['name']} ({item['sku']})"] + [
+        f"{k}: {v}" for k, v in item["specs"].items()]
+    if item.get("moq"):
+        facts.append(f"MOQ {item['moq']}")
+    if item.get("certs"):
+        facts.append(f"certifications: {item['certs']}")
+    gen = compose(
+        f"answering a question about {item['sku']} using the catalog "
+        "facts — weave them into natural sentences, offer pricing help at "
+        "the end", lang, text, facts=facts, remote=remote)
+    _set_offer(remote, item["sku"],
+               facts + [f"MOQ: {item.get('moq') or 'ask'}"])
+    if gen:
+        return gen
+    specs = "; ".join(f"{k}: {v}" for k, v in item["specs"].items())
+    moq = f" MOQ {item['moq']}." if item.get("moq") else ""
+    certs = f" Certs: {item['certs']}." if item.get("certs") else ""
+    return (f"{item['name']} ({item['sku']}): {specs}.{moq}{certs} "
+            f"Ask me for a price any time.")
+
 
 def _domain_tokens() -> set[str]:
     import time as _t
@@ -2009,34 +2103,19 @@ def route(customer: dict, text: str, remote: str = "") -> str | None:
                 or tt(lang, "welcome"))
 
     if intent == "SPEC_Q":
-        # deterministic S1 read when a SKU is present (fast, exact); anything
-        # else -> RAG over the client knowledge base, stub as last resort
+        # Deterministic S1 read when the message names a product — exact SKU
+        # token OR a natural-name alias ("the ats panel" -> ATS-50). Buyers
+        # rarely type SKUs; without aliasing they fall into RAG, whose
+        # KB-miss behaviour is the fake "let me check" (traps #34/#37).
         m = re.search(r"\b(DG-\d+|ATS-\d+|STS-\d+)\b", text.upper())
-        if m:
+        sku = m.group(1) if m else _alias_sku(text)
+        if sku:
             try:
-                item = _get(f"{SPINE_URL}/catalog/{m.group(1)}")
-                facts = [f"{item['name']} ({item['sku']})"] + [
-                    f"{k}: {v}" for k, v in item["specs"].items()]
-                if item.get("moq"):
-                    facts.append(f"MOQ {item['moq']}")
-                if item.get("certs"):
-                    facts.append(f"certifications: {item['certs']}")
-                gen = compose(
-                    f"answering a spec question about {item['sku']} using the "
-                    "catalog facts — weave them into natural sentences, offer "
-                    "pricing help at the end", lang, text, facts=facts,
-                    remote=remote)
-                _set_offer(remote, item["sku"],
-                           facts + [f"MOQ: {item.get('moq') or 'ask'}"])
-                if gen:
-                    return gen
-                specs = "; ".join(f"{k}: {v}" for k, v in item["specs"].items())
-                moq = f" MOQ {item['moq']}." if item.get("moq") else ""
-                certs = f" Certs: {item['certs']}." if item.get("certs") else ""
-                return (f"{item['name']} ({item['sku']}): {specs}.{moq}{certs} "
-                        f"Ask me for a price any time.")
-            except Exception:
-                pass
+                return _catalog_reply(
+                    _get(f"{SPINE_URL}/catalog/{sku}"), lang, text, remote)
+            except Exception as e:
+                print(f"[a3-spec] catalog lookup {sku} failed: {e}",
+                      flush=True)
         # Availability probe ("do you have kaolin?") with NO catalog hit:
         # answer the grounded negative plainly + pivot to the real line.
         # A human sales thread never stalls with a fake "let me check" —
@@ -2063,7 +2142,7 @@ def route(customer: dict, text: str, remote: str = "") -> str | None:
                                  "line; demand signal for staff.\n")
             return reply
         rag = spec_answer(text)
-        if rag:
+        if rag and not _looks_like_stall(rag):
             print("[a3-spec] answered from knowledge base", flush=True)
             # the RAG reply usually ends in an offer ("want more details?")
             # — arm it so "yes please" fulfills instead of dead-ending.
@@ -2071,6 +2150,19 @@ def route(customer: dict, text: str, remote: str = "") -> str | None:
             # lets the model reuse anything in it but invent nothing new.
             _set_offer(remote, "the topic just discussed", [rag])
             return rag
+        if rag:  # stall signature — repair instead of relaying the lie
+            print("[a3-spec] RAG stalled ('check with team') -> repairing",
+                  flush=True)
+            sku = _alias_sku(text)
+            if sku:
+                try:
+                    return _catalog_reply(
+                        _get(f"{SPINE_URL}/catalog/{sku}"), lang, text,
+                        remote)
+                except Exception:
+                    pass
+        # Nothing deterministic worked. The holding line below now tells the
+        # TRUTH because this escalation arms a real staff follow-up.
         reply = tt(lang, "spec_stub")
         escalate_to_chatwoot(remote, text, "SPEC_Q", lang, customer, reply,
                              "Knowledge-base miss — A4 low-confidence path, "
@@ -2178,6 +2270,13 @@ def route(customer: dict, text: str, remote: str = "") -> str | None:
                        facts + [tail], kind="pdf", quote=q,
                        quote_id=saved["quote_id"], customer=dict(customer))
         if body:
+            # exact-mode guards the date DIGITS, not the phrasing — the
+            # model occasionally rewords it away (O5-S3 flake). Validity is
+            # contractual; normalize structurally.
+            if "Valid until" not in body and "有效期" not in body:
+                body += (f"\n\n报价有效期至 {q['valid_until']}。"
+                         if lang.startswith("zh")
+                         else f"\n\nValid until {q['valid_until']}.")
             return f"{body}\n\n{tail}"
         return tt(lang, "price_ok").format(
             lines="\n".join(bullets), currency=q["currency"],

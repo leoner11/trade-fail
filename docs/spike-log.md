@@ -1542,3 +1542,51 @@ O5 auto **10/10** (one intermediate 9/10 = GLM nondeterminism, trap #31
 pattern; clean rerun green) · S9 **5/5**. Classify N/A (no prompt-file
 edits this round). Chatwoot artifacts: convs #3/#4 + replay threads left
 for the visual pass.
+
+### Session #13 cont. 2 (2026-08-26, 00:xx) — trap #34 bites Leonard LIVE:
+### "can i know more about the ats panel?" → fake "I'll check with our team"
+
+Leonard's 00:39 phone test: capability ✓, but an alias-phrased product
+question ("the ats panel" — no digit → no SKU regex hit) fell through to
+the dify RAG workflow, whose KB-miss prompt STILL says "say you will check
+with the team" (#34, deferred too long). Glue relayed the stall WITHOUT
+arming anyone → second broken promise in one thread ("okay so?" → handoff).
+
+### Built (glue-side; dify DSL untouched tonight — re-import still queued)
+
+- **Alias resolution** `_alias_sku()`: natural names → ONE catalog SKU,
+  data-driven from S1 (word-overlap scoring; a shared word like "genset"
+  never resolves alone, unique words like "ats"/"container" do; ties refuse
+  to guess). Cached 5 min. "the ats panel"→ATS-50, "soundproof
+  container"→STS-200, "100kVA open one"→DG-100 ✓.
+- **`_catalog_reply()`** refactor: one S1 answer path shared by exact-SKU,
+  alias, and stall-repair entries.
+- **Stall repair**: RAG output matching `_STALL_RE` (check with/get back to/
+  稍后核实/同事回复…) is never relayed raw — glue retries alias-resolution;
+  if that fails it arms a REAL escalation so `spec_stub` finally tells the
+  truth.
+- **Validity backstop** (trap #38): exact-mode guards date digits, not
+  phrasing — GLM occasionally rewords "Valid until" away (O5-S3 flake,
+  failed once tonight after passing twice). Glue now appends the validity
+  line deterministically when the generated body lacks it.
+
+Replay of Leonard's failing sequence: company-do → line+question ✓ ·
+"can i know more about the ats panel?" → full ATS-50 spec sheet + pricing
+offer, ZERO stall ✓.
+
+### New traps
+
+37. **Alias-phrased product questions bypass SKU routing** and inherit
+    whatever pathology the downstream organ has. Any product mention MUST
+    resolve deterministically before falling to generative paths; resolve
+    from DATA (S1 names), not hardcoded synonyms.
+38. **Exact-mode number guards don't guard PHRASING.** A gated string
+    ("Valid until …", contract terms) that the model may reword needs a
+    deterministic post-check/backstop, not just a prompt note.
+
+### Gates (FULL board, after all changes)
+
+calc **22/22** · e2e **13/13** · voice **PASS 8/8** · B4 **12/12** ·
+O5 auto **10/10 ×2** (validity backstop proven against its own flake) ·
+S9 **5/5** (after the usual S6 spike-row clear). Classify N/A (no prompt
+files touched).
