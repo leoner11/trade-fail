@@ -89,9 +89,12 @@ STS-200): S1 catalog = S2 `pricing_rules.generators.json` = dify KB
 4. **Voice overhaul DONE (session #13, 2026-08-25)** — replies no longer
    stall/re-greet/pitch generically; grounded "not our line" + pivot,
    concrete capability answers from S1 facts, thread continuity, zh
-   softeners + seeded samples (from Leonard's real-thread evidence).
-   Follow-up queued: dify spec DSL still fake-promises "let me check" on
-   attribute misses (trap #34) — needs structured marker + re-import.
+   softeners + seeded samples (from Leonard's real-thread evidence), and
+   offer fulfillment: the bot now DELIVERS when the buyer accepts its own
+   offer ("yes please" → details/PDF), never hands off (traps #35/#36).
+   Verified on Leonard's real phone. Follow-up queued: dify spec DSL still
+   fake-promises "let me check" on attribute misses (trap #34) — needs
+   structured marker + re-import.
 5. Optional polish: escalation-note dedupe in chatwoot (consecutive OTHER
    escalations re-arm the same conversation with identical notes — visible
    in conv #4); webhook-auth hardening design doc (buyer webhook is

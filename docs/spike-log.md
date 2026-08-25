@@ -1485,3 +1485,60 @@ Conv #3 (original evidence) and conv #4 (voice-fix artifacts) both left open
 for Leonard's visual pass. Follow-ups queued: DSL fake-promise rework (#34),
 escalation-note dedupe (visible again in conv #4 — two near-identical
 SPEC_Q notes), webhook-auth design doc, X5 tier_change surfacing.
+
+### Session #13 cont. (same evening) — Leonard's live phone test + the
+### promise-breaking bug ("yes please" -> handoff)
+
+Live WA test on Leonard's phone: capability answer ✓ concrete, ATS spec
+answer ✓ grounded, but TWO regressions of naturalness remained:
+1. First message "so okay, lets go" → cold neutral handoff. Buyer leaning IN
+   got pushed away.
+2. Bot offered "more details / other accessories?" → buyer: "yes please" →
+   "This needs personal attention from our team…" — **the bot broke its own
+   promise**. Root cause: routing is stateless per message; an agreement is
+   classified fresh (agreement ≈ closure territory) with no knowledge that
+   OUR previous message created an obligation.
+
+### Built
+
+- `_THREAD[remote].offer_pending` — every branch whose reply ends in an
+  offer arms {about, facts, …}: SPEC_Q SKU path (spec facts + MOQ), RAG path
+  (its own answer text as fact source — subset-number guard then permits
+  reuse but blocks invented specs), capability path (company line), PRICE_Q
+  delivery (kind=pdf + quote_id + customer + quote dict).
+- `_is_agreement()` full-message match (en/zh/id: yes please / 好的 / 可以 /
+  ya…): with a pending offer → FULFILL it (pdf kind → b4_deliver thread +
+  "on its way" line; info kind → compose "deliver it now from the facts,
+  no hedging, no handoff"). Agreement without pending + greeted thread →
+  warm acknowledgment, never escalation.
+- Substantive messages clear stale offers (no hijacking later flow).
+- `_is_engage()` for bare readiness ("so okay, lets go", 开始吧): FIRST
+  contact → anchored welcome (was cold handoff); regexes full-match only.
+- compose() retry now spells out banned openings on attempt 2 — an
+  identical prompt just reproduced id "Sama-sama pak…" twice (voice-gate ✗).
+
+Replay of the exact phone sequence: lets-go → anchored welcome ✓ ·
+capability → line + ONE question ✓ · ATS-50 → grounded specs + offer armed ✓
+· "yes please" → fulfills with bullet recap of REAL facts + invites quantity
+for quote ✓ (no new numbers — guard holds).
+
+### New traps
+
+35. **Stateless routing breaks conversational obligations.** A bot that
+    makes an offer OWNS the next turn after acceptance; classifying the
+    acceptance in isolation routes it to closure/handoff. Any branch that
+    ends a reply with a question/offer must arm fulfillment state, and
+    pure-agreement messages must check it BEFORE classification-based
+    routing. (Found live on Leonard's phone, not by any gate — add a gate
+    case when the thread-state API settles.)
+36. **Regenerating with an identical prompt reproduces the identical
+    opener** (dominant register wins at temp 0.7). Retries must inject the
+    banned openings explicitly.
+
+### Gates after this round (FULL board)
+
+calc **22/22** · e2e **13/13** · voice **PASS 8/8** · B4 **12/12** ·
+O5 auto **10/10** (one intermediate 9/10 = GLM nondeterminism, trap #31
+pattern; clean rerun green) · S9 **5/5**. Classify N/A (no prompt-file
+edits this round). Chatwoot artifacts: convs #3/#4 + replay threads left
+for the visual pass.

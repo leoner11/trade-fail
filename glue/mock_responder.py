@@ -216,6 +216,48 @@ _CAPABILITY_RES = [
     r"\bapa\s+(yang\s+)?(anda|kalian|perusahaan)\s+(jual|buat|produksi)\b",
 ]
 
+# Pure-agreement messages ("yes please", 好的, ya) answering OUR OWN offer.
+# FULL-match only — "yes but we need 500 units custom" must route normally.
+_AGREEMENT_RES = [
+    r"^\s*(?:yes|yeah|yep|yea|sure|ok(?:ay)?|okey|please(?: do)?|yes ?please|"
+    r"pls|plz|go ahead|sounds good|i(?:'| a)m interested|interested|deal)\s*"
+    r"[!.~ ]*\s*$",
+    r"^\s*(?:好|好的|好啊|好呀|可以|可以呀|要|需要的|行|行啊|嗯+|哦克|ok的)\s*"
+    r"[吧呢啊呀～~！!。.\s]*$",
+    r"^\s*(?:ya|ya ?betul|baik|boleh|silakan|oke|ok)\s*[!.~ ]*\s*$",
+]
+
+
+def _is_agreement(text: str) -> bool:
+    return any(re.match(p, text.strip(), re.I) for p in _AGREEMENT_RES)
+
+
+# Bare engagement-readiness ("so ok, let's go") is a buyer leaning IN.
+# Handing that to a human reads cold (live test 2026-08-25); it gets the
+# anchored welcome/steer instead.
+_ENGAGE_RES = [
+    r"^\s*(?:so\s+)?ok(?:ay)?[,.]?\s*(?:then\s+)?(?:lets?|let's|let us)\s+"
+    r"(?:go|start|begin)\s*[!.~ ]*\s*$",
+    r"^\s*(?:lets?|let's|let us)\s+(?:go|start|begin|talk|do this)\s*"
+    r"[!.~ ]*\s*$",
+    r"^\s*i(?:'| a)m ready\b[!.~ ]*\s*$",
+    r"^\s*(?:那我们)?开始吧\s*[吧～~！!。\.\s]*$",
+]
+
+
+def _is_engage(text: str) -> bool:
+    return any(re.match(p, text.strip(), re.I) for p in _ENGAGE_RES)
+
+
+def _set_offer(remote: str, about: str, facts: list[str],
+               **extra) -> None:
+    """Record that our last reply ended with an offer the buyer can accept.
+    Cleared on the next substantive message so stale offers never hijack
+    later routing."""
+    rec = {"about": about, "facts": list(facts)}
+    rec.update(extra)
+    _THREAD.setdefault(remote, {})["offer_pending"] = rec
+
 _AVAILABILITY_RES = [
     r"\b(do|does|can|is)\s+(you|u|it|there)\b.*\b(have|carry|sell|stock|"
     r"supply|make|manufacture|produce|offer|available|any)\b",
@@ -524,8 +566,8 @@ def compose(situation: str, lang: str, buyer_text: str,
                        "questions they already answered.")
     parts.append(final_note)
     parts.append(f"Write the WhatsApp reply now, ONLY in {lang_name}.")
-    prompt = "\n\n".join(parts)
-    text = None
+    base_prompt = "\n\n".join(parts)
+    prompt = base_prompt
     last_ok = None  # guard-passing candidate; kept if openings keep clashing
     for attempt in range(2):
         try:
@@ -546,6 +588,12 @@ def compose(situation: str, lang: str, buyer_text: str,
         last_ok = cand
         if not any(_same_opening(cand, p) for p in th.get("recent", [])):
             return cand
+        # Retry with the banned openings spelled out — an identical prompt
+        # just reproduces the same natural opener (e.g. id "Sama-sama pak").
+        banned = sorted({p.split("\n")[0][:40] for p in th.get("recent", [])})
+        prompt = (base_prompt
+                  + "\n\nIMPORTANT: do NOT start your reply with anything "
+                    f"like {banned} — choose a clearly different opening.")
         print("[voice] opening clashed with a recent reply; regenerating",
               flush=True)
     # A repeated opening is a blemish; a static template mid-thread is a
@@ -1864,18 +1912,73 @@ def route(customer: dict, text: str, remote: str = "") -> str | None:
     if intent == "SPAM":
         return None  # polite silence (O5 scenario 8)
 
+    th = _THREAD.get(remote) or {}
+    if _is_agreement(text):
+        offer = th.get("offer_pending")
+        if offer:
+            # The bot offered something one message ago and the buyer
+            # accepted — breaking that promise into a human handoff is the
+            # single most unnatural thing a sales bot can do (live test
+            # 2026-08-25: "yes please" -> escalation). Fulfill it instead.
+            if offer.get("kind") == "pdf":
+                print(f"[thread] buyer accepted PDF offer "
+                      f"({offer.get('quote_id')})", flush=True)
+                threading.Thread(
+                    target=b4_deliver,
+                    args=(remote, offer["customer"], offer["quote"],
+                          offer["quote_id"]),
+                    daemon=True).start()
+                return tt(lang, "formal_offer")
+            print(f"[thread] fulfilling pending offer about "
+                  f"{offer.get('about')}", flush=True)
+            return (compose(
+                "in your previous message you offered more information and "
+                "the buyer just accepted — DELIVER IT NOW from the facts: "
+                "concrete details, no hedging, no handoff, no 'let me "
+                "check'; end by inviting the next concrete step (quantity "
+                "for pricing, or their application)", lang, text,
+                facts=list(offer["facts"]) + _company_line(), remote=remote)
+                or tt(lang, "welcome"))
+        # agreement with nothing pending: treat as light acknowledgment and
+        # keep the door open rather than escalating small talk
+        if th.get("greeted"):
+            return (compose(
+                "the buyer sent a short agreement/acknowledgment mid-thread "
+                "with no open question on your side — acknowledge warmly in "
+                "one line and invite their next need; do NOT escalate or "
+                "hand off", lang, text, facts=_company_line(), remote=remote)
+                or tt(lang, "welcome"))
+    else:
+        # any substantive message invalidates a stale pending offer
+        _THREAD.get(remote, {}).pop("offer_pending", None)
+
+    if (intent in ("GREETING", "OTHER") and not th.get("greeted")
+            and _is_engage(text)):
+        # "so okay, lets go" as the FIRST message: a buyer leaning in gets
+        # the anchored welcome, not a cold handoff (live test 2026-08-25).
+        _THREAD.setdefault(remote, {})["greeted"] = True
+        return (compose("the buyer signals they are ready to start talking "
+                        "business — welcome them warmly and anchor your "
+                        "reply in what the company actually makes (facts "
+                        "below), then ask ONE opening question about their "
+                        "need", lang, text, facts=_company_line(),
+                        remote=remote)
+                or tt(lang, "greet"))
+
     if intent in ("GREETING", "OTHER") and _match_any(text, _CAPABILITY_RES):
         # "so what do u do?" deserves the real product line, not an invented
         # 'wide range of products' pitch. Deterministic detector, grounded
         # facts, still zero arithmetic. Checked BEFORE the greeting branches
         # so an identity question never gets a generic welcome.
         _THREAD.setdefault(remote, {})["greeted"] = True
+        line_facts = _company_line()
+        _set_offer(remote, "the product line / other accessories", line_facts)
         return (compose(
             "the buyer asks what this company actually does or sells — "
             "answer concretely from the facts: name the real product line, "
             "then ask ONE question about their application or required "
             "power range; no generic 'we do everything' claims beyond the "
-            "facts", lang, text, facts=_company_line(), remote=remote)
+            "facts", lang, text, facts=line_facts, remote=remote)
             or tt(lang, "capability").format(
                 line=", ".join(MATERIALS) or "generator sets"))
 
@@ -1923,6 +2026,8 @@ def route(customer: dict, text: str, remote: str = "") -> str | None:
                     "catalog facts — weave them into natural sentences, offer "
                     "pricing help at the end", lang, text, facts=facts,
                     remote=remote)
+                _set_offer(remote, item["sku"],
+                           facts + [f"MOQ: {item.get('moq') or 'ask'}"])
                 if gen:
                     return gen
                 specs = "; ".join(f"{k}: {v}" for k, v in item["specs"].items())
@@ -1960,6 +2065,11 @@ def route(customer: dict, text: str, remote: str = "") -> str | None:
         rag = spec_answer(text)
         if rag:
             print("[a3-spec] answered from knowledge base", flush=True)
+            # the RAG reply usually ends in an offer ("want more details?")
+            # — arm it so "yes please" fulfills instead of dead-ending.
+            # The answer itself is the fact source: the subset-number guard
+            # lets the model reuse anything in it but invent nothing new.
+            _set_offer(remote, "the topic just discussed", [rag])
             return rag
         reply = tt(lang, "spec_stub")
         escalate_to_chatwoot(remote, text, "SPEC_Q", lang, customer, reply,
@@ -2060,6 +2170,13 @@ def route(customer: dict, text: str, remote: str = "") -> str | None:
             final_note=PRICE_FINAL_NOTE)
         tail = tt(lang, "formal_offer") if parsed.get("formal") \
             else tt(lang, "pdf_offer")
+        if saved is not None:
+            # "Want a formal PDF?" is an offer; if the buyer answers
+            # "yes please", deliver the PDF instead of dead-ending (thread
+            # fulfillment, same mechanism as spec-answer offers).
+            _set_offer(remote, f"{saved['quote_id']} formal pdf",
+                       facts + [tail], kind="pdf", quote=q,
+                       quote_id=saved["quote_id"], customer=dict(customer))
         if body:
             return f"{body}\n\n{tail}"
         return tt(lang, "price_ok").format(
