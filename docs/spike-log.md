@@ -1590,3 +1590,42 @@ calc **22/22** · e2e **13/13** · voice **PASS 8/8** · B4 **12/12** ·
 O5 auto **10/10 ×2** (validity backstop proven against its own flake) ·
 S9 **5/5** (after the usual S6 spike-row clear). Classify N/A (no prompt
 files touched).
+
+### Session #13 cont. 3 (01:xx) — pricing continuation closes the sale loop
+
+Leonard's 01:05 test: spec→offer→fulfillment all ✓, but "probably like 10
+units" (answering OUR quantity question) → human handoff. Root cause chain:
+(1) stateless classify sees no product/price verb → OTHER; (2) even after
+glue synthesizes "10 units of ATS-50 STD" from pending-offer state, the
+LIVE triage app labels that canonical ask OTHER too ("asks nothing
+literally"). Fix: confirmed continuation FORCES route=PRICE_Q (cls built
+locally, thread lang reused) — zero prompt roulette, no dify re-import.
+Replay: specs ✓ → yes → fulfillment+quantity ask ✓ → "probably like 10
+units" → **inline computed quote** ATS-50 ×10 = USD 3,780.00 (qty discount)
++ validity line + PDF offer armed ✓✓ — the full sales conversation now runs
+without a single human touchpoint.
+
+Also: O5-S8 flake caught live — triage wavered on gibberish across runs
+(SPAM conf .95 vs OTHER conf .3/lang=un); low-confidence routing then
+escalated KEYBOARD MASH to a human. New `_looks_like_noise` gate
+(deterministic): letters < 50% of a ≥4-char message → polite silence,
+before any LLM call. Bare-number replies ("10") unaffected.
+
+### New traps
+
+39. **Gated scenario inputs are adversarial by nature** — gibberish sits on
+    a classifier decision boundary, so a gate can pass for weeks then flip
+    on model drift. Anything the O5 board asserts MUST have a deterministic
+    backstop where semantics allow it (noise → silence is pure glue logic;
+    no model opinion needed).
+40. **Canonical synthesized text still needs forced routing**: rewriting
+    the buyer's words into a clean ask does NOT help if the classifier has
+    never seen that intent surface without a verb. When thread state
+    already proves the intent, skip classification entirely.
+
+### Gates (FULL board)
+
+calc **22/22** · e2e **13/13** · voice **PASS 8/8** (one zh-capability
+variation flake — canonical-opener case — green on rerun) · B4 **12/12** ·
+O5 auto **10/10 ×2 consecutive** (noise gate proven against its own flake) ·
+S9 **5/5**. Classify N/A (triage app untouched).

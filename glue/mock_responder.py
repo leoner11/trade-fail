@@ -1993,9 +1993,50 @@ def _extract_text(message: dict) -> str:
 
 def route(customer: dict, text: str, remote: str = "") -> str | None:
     """A3-2 + Phase B. Returns the buyer-facing reply, or None for silence."""
-    cls = classify(text)
+    # Obvious-noise gate (deterministic): keyboard mash, emoji-only, symbol
+    # spam. The triage model wavers on these (SPAM 0.95 one run, OTHER 0.3
+    # the next — O5-S8 flake) and low-confidence then escalates GIBBERISH to
+    # a human. Letters < half the message => nothing to say, be silent.
+    stripped = text.strip()
+    if len(stripped) >= 4:
+        alpha = sum(ch.isalpha() for ch in stripped)
+        if alpha / len(stripped) < 0.5:
+            print("[a3] obvious noise -> polite silence", flush=True)
+            return None
+    # Pricing continuation (thread state, BEFORE classify): when WE asked
+    # for quantity in a pending offer and the buyer replies with one, feed
+    # the canonical ask into the normal pipeline — classifying "probably
+    # like 10 units" statelessly routes it to a human and breaks the
+    # conversation exactly where a sale was closing (live test 01:05).
+    th0 = _THREAD.get(remote) or {}
+    offer = th0.get("offer_pending")
+    forced_price = False
+    if offer:
+        about = offer.get("about") or ""
+        if re.fullmatch(r"[A-Z]{2,3}-\d+", about) \
+                and not re.search(r"\b(DG-\d+|ATS-\d+|STS-\d+)\b", text.upper()):
+            qm = re.search(
+                r"\b(\d+)\s*(?:units?|pcs|pieces|sets?|unit|台|个|件)\b"
+                r"|^\s*(?:like |around |approx\.? |~)?(\d{1,4})\s*$",
+                text, re.I)
+            if qm:
+                qty = qm.group(1) or qm.group(2)
+                print(f"[thread] pricing continuation: {qty}x {about}",
+                      flush=True)
+                text = f"{qty} units of {about} STD"
+                _THREAD.get(remote, {}).pop("offer_pending", None)
+                forced_price = True
+    if forced_price:
+        # The canonical ask IS a price request — no classifier needed (the
+        # live triage app calls bare 'quantity + SKU' messages OTHER).
+        cls = {"intent": "PRICE_Q", "language": th0.get("lang") or "en",
+               "urgency": "normal", "sentiment": "neutral",
+               "confidence": 0.99, "route": "price"}
+    else:
+        cls = classify(text)
     intent = cls.get("intent")
     lang = (cls.get("language") or "en")[:2]
+    _THREAD.setdefault(remote, {})["lang"] = lang
     print(f"[a3] intent={intent} lang={lang} conf={cls.get('confidence')} "
           f"urgency={cls.get('urgency')} sentiment={cls.get('sentiment')} "
           f"route={cls.get('route')}", flush=True)
