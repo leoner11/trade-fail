@@ -1,0 +1,127 @@
+{
+  "schema_version": 3,
+  "_note": "Ducotti-flavored GENERATOR line — S2 telling the same story as S1. Placeholder prices until O3 captures the boss's real numbers + backtest (flowchart gate). Swap via PRICING_RULES env.",
+  "currency": "USD",
+  "validity_days": 14,
+  "material_base_prices": [
+    {
+      "name": "DG-30",
+      "base_price": 3850,
+      "bulk_price": 3400,
+      "note": "30kVA silent diesel genset"
+    },
+    {
+      "name": "DG-50",
+      "base_price": 5200,
+      "bulk_price": 4650,
+      "note": "50kVA silent diesel genset"
+    },
+    {
+      "name": "DG-100",
+      "base_price": 9800,
+      "bulk_price": 8900,
+      "note": "100kVA open diesel genset"
+    },
+    {
+      "name": "ATS-50",
+      "base_price": 420,
+      "bulk_price": 360,
+      "note": "automatic transfer switch panel 50A"
+    },
+    {
+      "name": "STS-200",
+      "base_price": 3200,
+      "bulk_price": 2950,
+      "note": "20ft soundproof container up to 200kVA"
+    }
+  ],
+  "size_coefficients": [
+    {
+      "size": "STD",
+      "coefficient": 1.0,
+      "note": "standard configuration"
+    },
+    {
+      "size": "XL",
+      "coefficient": 0,
+      "note": "custom/OEM configuration — quote manually"
+    }
+  ],
+  "process_fees": [
+    {
+      "name": "Remote Start Controller",
+      "fee": 260,
+      "note": "auto start/stop module"
+    },
+    {
+      "name": "Fuel Tank Upgrade 24h",
+      "fee": 380,
+      "note": "long-run base tank"
+    },
+    {
+      "name": "Extended Warranty 2 Years",
+      "fee": 310,
+      "note": "beyond standard 1y"
+    },
+    {
+      "name": "Installation & Commissioning",
+      "fee": 450,
+      "note": "on-site within Java/Bali"
+    },
+    {
+      "name": "Weatherproof Canopy",
+      "fee": 290,
+      "note": "outdoor rating"
+    }
+  ],
+  "quantity_discounts": [
+    {
+      "min_qty": 1,
+      "discount_pct": 0,
+      "label": "single unit full price"
+    },
+    {
+      "min_qty": 2,
+      "discount_pct": 3,
+      "label": "2-4 units 97%"
+    },
+    {
+      "min_qty": 5,
+      "discount_pct": 6,
+      "label": "5-9 units 94%"
+    },
+    {
+      "min_qty": 10,
+      "discount_pct": 10,
+      "label": "10+ units 90%"
+    }
+  ],
+  "customer_tiers": [
+    {
+      "name": "new",
+      "price_factor": 1.0,
+      "payment_terms": "T/T 30% deposit, 70% before shipment"
+    },
+    {
+      "name": "repeat",
+      "price_factor": 0.95,
+      "payment_terms": "T/T 20% deposit, 80% before shipment"
+    },
+    {
+      "name": "distributor",
+      "price_factor": 0.9,
+      "payment_terms": "T/T against B/L copy"
+    }
+  ],
+  "authority": {
+    "max_discount_pct": 15,
+    "note": "Agent may apply qty-tier discounts automatically; anything beyond this cap requires BOSS approval (flowchart B6)."
+  },
+  "price_visibility": {
+    "default": "public",
+    "per_material": {
+      "STS-200": "internal_only"
+    },
+    "_note": "internal_only materials NEVER enter inline quoting — glue routes them straight to a human quote (B5). The agent cannot leak a number it was never given."
+  }
+}

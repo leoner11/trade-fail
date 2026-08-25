@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "currency": "USD",
   "validity_days": 30,
   "material_base_prices": [
@@ -47,7 +47,7 @@
     {
       "size": "XL",
       "coefficient": 0,
-      "note": "> 40cm — quote manually"
+      "note": "> 40cm \u2014 quote manually"
     }
   ],
   "process_fees": [
@@ -124,5 +124,10 @@
   "authority": {
     "max_discount_pct": 15,
     "note": "Agent may apply qty-tier discounts automatically; anything beyond this cap requires BOSS approval (flowchart B6)."
+  },
+  "price_visibility": {
+    "default": "public",
+    "per_material": {},
+    "_note": "v3: mark materials internal_only so glue never lets them enter inline quoting"
   }
 }

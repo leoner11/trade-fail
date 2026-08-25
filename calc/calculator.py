@@ -15,6 +15,8 @@ customer-tier terms / authority caps).
 # NOTE: no `from __future__ import annotations` here — pydantic + function-local
 # models (build_app) can't resolve string ForwardRefs on 3.12 without it mattering.
 import json
+import re
+import threading
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -96,6 +98,118 @@ class QuoteResult:
 
 
 # ---------------------------------------------------------------- engine
+
+def validate_rules(rules: dict) -> list[str]:
+    """Structural + numeric validation mirroring what quote() actually needs.
+    Returns human-readable problems (empty list = valid). Money-bearing
+    values must be > 0; size coefficients may be 0 — that is the XL
+    manual-quote escape hatch, not an error."""
+    p: list[str] = []
+
+    def num(v) -> float | None:
+        try:
+            f = float(v)
+            return f if f == f else None   # NaN guard
+        except (TypeError, ValueError):
+            return None
+
+    mbp = rules.get("material_base_prices")
+    if not isinstance(mbp, list) or not mbp:
+        p.append("material_base_prices must be a non-empty list")
+    else:
+        names = set()
+        for m in mbp:
+            n = m.get("name")
+            if not n:
+                p.append("material_base_prices: entry without name")
+            elif n in names:
+                p.append(f"material_base_prices: duplicate '{n}'")
+            names.add(n or "")
+            for k in ("base_price", "bulk_price"):
+                v = num(m.get(k))
+                if v is None or v <= 0:
+                    p.append(f"{n or '?'}: {k} must be > 0 (got {m.get(k)!r})")
+
+    sc = rules.get("size_coefficients")
+    if not isinstance(sc, list) or not sc:
+        p.append("size_coefficients must be a non-empty list")
+    else:
+        names = set()
+        for s in sc:
+            n = str(s.get("size", "")).strip()
+            if not n:
+                p.append("size_coefficients: entry without size")
+            elif n.lower() in names:
+                p.append(f"size_coefficients: duplicate '{n}'")
+            names.add(n.lower())
+            v = num(s.get("coefficient"))
+            if v is None or v < 0:
+                p.append(f"size '{s.get('size', '?')}': coefficient must be >= 0 "
+                         f"(got {s.get('coefficient')!r}; 0 = manual-quote hatch)")
+
+    pf = rules.get("process_fees", [])
+    if not isinstance(pf, list):
+        p.append("process_fees must be a list")
+    else:
+        seen = set()
+        for f in pf:
+            n = str(f.get("name", "")).strip()
+            if not n:
+                p.append("process_fees: entry without name")
+            elif n.lower() in seen:
+                p.append(f"process_fees: duplicate '{n}'")
+            seen.add(n.lower())
+            v = num(f.get("fee"))
+            if v is None or v <= 0:
+                p.append(f"process '{f.get('name', '?')}': fee must be > 0")
+
+    qd = rules.get("quantity_discounts")
+    if not isinstance(qd, list) or not qd:
+        p.append("quantity_discounts must be a non-empty list")
+    else:
+        qtys = [num(t.get("min_qty")) for t in qd]
+        if any(q is None or q <= 0 or q != int(q) for q in qtys):
+            p.append("quantity_discounts: min_qty must be a positive integer")
+        else:
+            ordered = sorted(qtys)  # type: ignore[arg-type]
+            if any(a >= b for a, b in zip(ordered, ordered[1:])):
+                p.append("quantity_discounts: min_qty must be strictly increasing")
+        for t in qd:
+            d = num(t.get("discount_pct"))
+            if d is None or d < 0 or d >= 100:
+                p.append(f"tier min_qty={t.get('min_qty')}: discount_pct must be 0..<100")
+
+    ct = rules.get("customer_tiers")
+    if not isinstance(ct, list) or not ct:
+        p.append("customer_tiers must be a non-empty list")
+    else:
+        seen = set()
+        for t in ct:
+            n = t.get("name")
+            if not n:
+                p.append("customer_tiers: entry without name")
+            elif str(n).lower() in seen:
+                p.append(f"customer_tiers: duplicate tier '{n}'")
+            seen.add(str(n).lower())
+            f = num(t.get("price_factor", 1.0))
+            if f is None or f <= 0:
+                p.append(f"tier '{n or '?'}': price_factor must be > 0")
+
+    auth = rules.get("authority", {})
+    cap = num(auth.get("max_discount_pct", 0)) if isinstance(auth, dict) else None
+    if cap is None or cap < 0 or cap > 100:
+        p.append("authority.max_discount_pct must be 0..100")
+
+    vd = num(rules.get("validity_days", 30))
+    if vd is None or vd < 1 or vd != int(vd):
+        p.append("validity_days must be a positive integer")
+
+    cur = rules.get("currency", "USD")
+    if not isinstance(cur, str) or not re.fullmatch(r"[A-Z]{3}", str(cur).strip()):
+        p.append("currency must be a 3-letter ISO code (e.g. USD, EUR, CNY)")
+
+    return p
+
 
 class PricingEngine:
     def __init__(self, rules: dict | Path | str):
@@ -212,9 +326,12 @@ class PricingEngine:
 
 def build_app(rules_path: str | Path):
     from fastapi import Body, FastAPI
+    from fastapi.responses import JSONResponse
     from pydantic import BaseModel
 
-    engine = PricingEngine(rules_path)
+    rules_file = Path(rules_path)
+    _lock = threading.Lock()
+    engine = PricingEngine(rules_file)   # boot failure still crashes loudly
 
     app = FastAPI(title="MJCX calc", version="0.1.0",
                   description="Deterministic pricing. LLM parses, calc computes.")
@@ -237,8 +354,10 @@ def build_app(rules_path: str | Path):
 
     @app.post("/quote")
     def quote(inp: QuoteIn = Body(...)):
+        with _lock:
+            eng = engine
         try:
-            r = engine.quote(QuoteRequest(
+            r = eng.quote(QuoteRequest(
                 customer_id=inp.customer_id,
                 customer_tier=inp.customer_tier,
                 lines=[QuoteLine(**l.model_dump()) for l in inp.lines],
@@ -249,9 +368,58 @@ def build_app(rules_path: str | Path):
         except NotComputable as e:
             return {"status": "ESCALATE", "gaps": e.gaps}   # -> Phase B5
 
+    @app.post("/rules/validate")
+    def rules_validate(inp: dict = Body(...)):
+        """Dry-run validation of a candidate rules object (console editor
+        pre-check). Pure: touches no state."""
+        problems = validate_rules(inp.get("rules") or {})
+        return {"ok": not problems, "problems": problems}
+
+    @app.post("/rules/reload")
+    def rules_reload():
+        """Hot reload (console editor path): re-read RULES_PATH, re-validate,
+        swap under lock. WITHOUT this an edited file does nothing until
+        restart — the silent-stale-rules trap. A failed parse/validation
+        rolls the FILE back from its .bak twin and reports; the running
+        engine keeps serving the last good rules either way."""
+        nonlocal engine
+        bak = rules_file.with_suffix(rules_file.suffix + ".bak")
+        with _lock:
+            try:
+                raw = rules_file.read_text()
+                candidate = PricingEngine(json.loads(raw))
+                problems = validate_rules(candidate.rules)
+                if problems:
+                    raise ValueError("; ".join(problems[:6]))
+            except Exception as e:
+                rolled_back = False
+                if bak.exists():
+                    try:
+                        restored = json.loads(bak.read_text())
+                        PricingEngine(restored)          # sanity: .bak must load
+                        rules_file.write_text(bak.read_text())
+                        rolled_back = True
+                    except Exception as be:
+                        return JSONResponse(status_code=400, content={
+                            "ok": False, "error": f"{e}",
+                            "rolled_back": False,
+                            "rollback_error": str(be)[:160],
+                            "engine_state": "previous-rules-still-live"})
+                return JSONResponse(status_code=400, content={
+                    "ok": False, "error": str(e)[:300],
+                    "rolled_back": rolled_back,
+                    "engine_state": "previous-rules-still-live"})
+            engine = candidate
+        return {"ok": True,
+                "schema_version": engine.rules.get("schema_version"),
+                "materials": len(engine.rules.get("material_base_prices", []))}
+
     @app.get("/health")
     def health():
-        return {"ok": True, "engine": "calc", "rules": str(rules_path)}
+        with _lock:
+            eng = engine
+        return {"ok": True, "engine": "calc", "rules": str(rules_path),
+                "schema_version": eng.rules.get("schema_version")}
 
     return app
 

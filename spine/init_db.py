@@ -59,6 +59,20 @@ CREATE TABLE IF NOT EXISTS events (
     kind TEXT,                  -- escalation|session_drop|quote_sent|...
     detail_json TEXT
 );
+
+-- S6: social content queue (spine owns state; postiz only publishes)
+CREATE TABLE IF NOT EXISTS social_posts (
+    post_id TEXT PRIMARY KEY,
+    sku TEXT,                   -- product focus (S1 pointer)
+    platform TEXT,              -- linkedin|instagram|x
+    caption TEXT,
+    hashtags TEXT,
+    status TEXT DEFAULT 'pending',  -- pending|approved|rejected|scheduled|posted
+    postiz_id TEXT,
+    scheduled_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 # Seed: generator-style catalog (Ducotti-flavored for the spike)
