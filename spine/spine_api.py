@@ -6,8 +6,11 @@ Phase A2-1 (identity resolution), S1 lookups for dify tools, S5 quote writes.
 import csv
 import io
 import json
+import re
 import sqlite3
+import statistics
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Request
@@ -604,6 +607,171 @@ def set_conversation_status(cid: int, status: str = Body(..., embed=True)):
         if cur.rowcount == 0:
             raise HTTPException(404, f"unknown conversation {cid}")
     return {"conversation_id": cid, "status": status}
+
+
+@app.get("/reports/x5")
+def report_x5(days: float = 30):
+    """X5 monthly report, full depth (session #14). Spine is the data owner:
+    glue/console/delivery all render from this one computation.
+
+    - AI-handled vs escalated vs human-only conversations
+    - median first-response time (buyer in -> next bot/human out)
+    - top asked products (quote lines + SKU/name mentions in buyer text)
+    - KB misses (SPEC_Q escalations = unanswerable questions)
+    - escalation reason breakdown + tier changes (S8)
+    - quote money stats + SLA beacons + social counts
+    """
+    cutoff = (datetime.utcnow() - timedelta(days=days)).strftime(
+        "%Y-%m-%d %H:%M:%S")
+    with con() as c:
+        convs = c.execute(
+            "SELECT * FROM conversations "
+            "WHERE created_at >= ? OR updated_at >= ? OR escalated_at >= ?",
+            (cutoff, cutoff, cutoff)).fetchall()
+        conv_by_id = {r["id"]: r for r in convs}
+
+        msgs: list[sqlite3.Row] = []
+        if conv_by_id:
+            marks = ",".join("?" * len(conv_by_id))
+            msgs = c.execute(
+                "SELECT m.* FROM messages m WHERE m.ts >= ? AND "
+                f"m.conversation_id IN ({marks}) ORDER BY m.ts",
+                (cutoff, *conv_by_id.keys())).fetchall()
+
+        # --- AI vs human vs escalation -----------------------------------
+        has_bot: dict[int, bool] = {i: False for i in conv_by_id}
+        for m in msgs:
+            if m["sender_kind"] == "bot":
+                has_bot[m["conversation_id"]] = True
+        escalated_ids = [i for i, r in conv_by_id.items()
+                         if r["escalation_tag"]]
+        ai_handled = sum(1 for i in conv_by_id
+                         if has_bot[i] and i not in set(escalated_ids))
+        human_only = len(convs) - ai_handled - len(escalated_ids)
+
+        # --- response times (buyer in -> next out by bot or human) -------
+        deltas: list[float] = []
+        last_in: datetime | None = None
+        fmt = "%Y-%m-%d %H:%M:%S"
+        for m in msgs:
+            ts = datetime.strptime(m["ts"].split(".")[0], fmt)
+            if m["direction"] == "in" and m["sender_kind"] == "buyer":
+                last_in = ts
+            elif m["direction"] == "out" and m["sender_kind"] in (
+                    "bot", "human") and last_in is not None:
+                d = (ts - last_in).total_seconds()
+                if 0 <= d < 7 * 86400:  # ignore clock artifacts
+                    deltas.append(d)
+                last_in = None
+        median_s = statistics.median(deltas) if deltas else None
+
+        # --- top products -------------------------------------------------
+        freq: dict[str, int] = {}
+        for q in c.execute(
+                "SELECT request_json FROM quotes WHERE created_at >= ?",
+                (cutoff,)).fetchall():
+            try:
+                req = json.loads(q["request_json"] or "{}")
+                for line in req.get("lines", []):
+                    mat = str(line.get("material") or "?").upper()
+                    if mat != "?":
+                        freq[mat] = freq.get(mat, 0) + int(
+                            line.get("qty") or 1)
+            except Exception:
+                pass
+        tokens: list[str] = []
+        for item in c.execute("SELECT sku, name FROM catalog").fetchall():
+            tokens += [item["sku"], item["name"]]
+        tok_re = re.compile(
+            r"\b(" + "|".join(re.escape(t) for t in sorted(
+                {t.upper() for t in tokens if len(t) >= 3},
+                key=len, reverse=True)) + r")\b") if tokens else None
+        for m in msgs:
+            if m["direction"] == "in" and tok_re:
+                for hit in tok_re.findall(m["body"].upper()):
+                    freq[hit] = freq.get(hit, 0) + 1
+        top_products = sorted(freq.items(), key=lambda kv: -kv[1])[:8]
+
+        # --- KB misses + reasons + tier changes ---------------------------
+        kb_misses, reasons = [], {}
+        for e in c.execute(
+                "SELECT ts, detail_json FROM events WHERE kind='escalation' "
+                "AND ts >= ? ORDER BY ts DESC", (cutoff,)).fetchall():
+            try:
+                d = json.loads(e["detail_json"] or "{}")
+            except Exception:
+                continue
+            tag = str(d.get("tag") or d.get("intent") or "?")
+            reasons[tag] = reasons.get(tag, 0) + 1
+            if tag == "SPEC_Q":  # KB misses ONLY — OTHER is ambiguity, not a
+                # knowledge gap; the dify #34 marker will refine this later.
+                wa = str(d.get("wa_jid") or d.get("remote") or "?")
+                snippet = ""
+                m = re.search(r"Buyer wrote: \"(.{0,200})", d.get("note") or "")
+                if m:
+                    snippet = m.group(1).split("\"")[0]
+                else:
+                    # legacy events carry no note — fall back to the
+                    # conversation's last buyer line (close enough for a
+                    # report; the exact trigger lives in the thread)
+                    row2 = c.execute(
+                        "SELECT id FROM conversations WHERE wa_jid=?",
+                        (wa,)).fetchone() if wa != "?" else None
+                    if row2:
+                        m3 = c.execute(
+                            "SELECT body FROM messages WHERE "
+                            "conversation_id=? AND direction='in' AND "
+                            "sender_kind='buyer' ORDER BY ts DESC LIMIT 1",
+                            (row2["id"],)).fetchone()
+                        if m3:
+                            snippet = m3["body"][:120]
+                kb_misses.append({
+                    "ts": e["ts"], "contact": wa,
+                    "tag": tag, "snippet": snippet})
+        tier_changes = [json.loads(r["detail_json"]) | {"ts": r["ts"]}
+                        for r in c.execute(
+                            "SELECT ts, detail_json FROM events "
+                            "WHERE kind='tier_change' AND ts >= ? "
+                            "ORDER BY ts DESC", (cutoff,)).fetchall()]
+
+        # --- money / beacons / social -------------------------------------
+        quotes = c.execute(
+            "SELECT status, total, currency FROM quotes WHERE created_at >= ?",
+            (cutoff,)).fetchall()
+        accepted = sum(1 for q in quotes if q["status"] == "accepted")
+        rejected = sum(1 for q in quotes if q["status"] == "rejected")
+        closed = accepted + rejected
+        value = sum(q["total"] or 0 for q in quotes)
+        beacons = c.execute(
+            "SELECT COUNT(*) n FROM events WHERE kind='sla_beacon' "
+            "AND ts >= ?", (cutoff,)).fetchone()["n"]
+        posted = c.execute(
+            "SELECT COUNT(*) n FROM social_posts WHERE status IN "
+            "('posted','scheduled') AND updated_at >= ?",
+            (cutoff,)).fetchone()["n"]
+        pending_posts = c.execute(
+            "SELECT COUNT(*) n FROM social_posts WHERE status='pending' "
+            "AND updated_at >= ?", (cutoff,)).fetchone()["n"]
+
+    return {
+        "days": days,
+        "conversations": {"total": len(convs), "ai_handled": ai_handled,
+                          "escalated": len(escalated_ids),
+                          "human_only": max(human_only, 0)},
+        "median_response_seconds": median_s,
+        "responses_measured": len(deltas),
+        "top_products": [{"name": k, "count": v} for k, v in top_products],
+        "kb_misses": kb_misses,
+        "escalation_reasons": reasons,
+        "tier_changes": tier_changes,
+        "quotes": {"sent": len(quotes), "accepted": accepted,
+                   "rejected": rejected,
+                   "win_rate_pct": round(100 * accepted / closed)
+                   if closed else None,
+                   "value_sent": value},
+        "sla_beacons": beacons,
+        "social": {"posted_or_scheduled": posted, "pending": pending_posts},
+    }
 
 
 @app.get("/health")

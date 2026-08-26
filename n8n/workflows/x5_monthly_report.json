@@ -1,0 +1,57 @@
+{
+ "name": "X5 monthly report (1st 08:00)",
+ "nodes": [
+  {
+   "parameters": {
+    "rule": {
+     "interval": [
+      {
+       "field": "months",
+       "triggerAtDayOfMonth": 1,
+       "triggerAtHours": 8,
+       "triggerAtMinutes": 0
+      }
+     ]
+    }
+   },
+   "id": "x5m-trigger",
+   "name": "monthly",
+   "type": "n8n-nodes-base.scheduleTrigger",
+   "typeVersion": 1.2,
+   "position": [0, 0]
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "http://host.docker.internal:8102/x5/send?days=30",
+    "options": {
+     "timeout": 300000
+    }
+   },
+   "id": "x5m-call",
+   "name": "glue /x5/send (full)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [220, 0]
+  }
+ ],
+ "connections": {
+  "monthly": {
+   "main": [
+    [
+     {
+      "node": "glue /x5/send (full)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1",
+  "timezone": "Asia/Jakarta"
+ },
+ "active": false,
+ "id": "x5-monthly-001"
+}
