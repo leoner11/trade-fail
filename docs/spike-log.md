@@ -1822,3 +1822,202 @@ key from the backend directly (key-minting endpoint not yet located;
 candidates: integrations/settings controllers), wires .env, runs S9.
 Full debug order + endpoint notes live in NEXT_SESSION_PROMPT.md postiz
 section. Probe account: probe@mjcx.test / ProbeTest123!.
+
+---
+
+## Session #14 (2026-08-26) — postiz signup ROOT-CAUSED + key wired via API
+
+### The bug was OUR env, not Next.js (trap #44)
+
+Headless repro per debug order: GET /auth renders 200 with full chunk set;
+the RSC/server-action path is fine. The REAL story came from the container's
+nginx access log — Leonard's Safari POSTs went to
+`/public/v1/auth/register` → **404 from the FRONTEND** (nginx routes `/api/*`
+to the backend prefix-stripped, everything else to Next :4200).
+
+Chain of custody:
+1. Our compose line set `NEXT_PUBLIC_BACKEND_URL=http://localhost:13000/public/v1`
+   (copied from postiz's current-docs example).
+2. v2.11.2 frontend joins that base verbatim onto relative calls
+   (`D("/auth/register", …)` in the shipped chunks; base surfaces to the
+   browser via SSR payload `"backendUrl":"…"`).
+3. v2.11.2 backend has NO `/public/v1/auth/*` routes (only `/auth/*` under
+   the `api` global prefix; public/v1 exists for posts/integrations only).
+   → every signup attempt 404'd into the Next app itself. The "router state
+   header" throw in the frontend log is downstream noise from this flow,
+   not a skew bug.
+
+**Fix:** compose `NEXT_PUBLIC_BACKEND_URL=…/api`; recreated the container;
+SSR payload now serves `"backendUrl":"http://localhost:13000/api"` ✓.
+Browser signup should now work — Leonard retry pending (normal window first;
+incognito only if it recurs).
+
+### Key wired WITHOUT the UI (Leonard's bypass route, executed)
+
+No minting endpoint needed: orgs get their apiKey at creation;
+`GET /api/user/self` returns it as `publicApi` for ADMIN/SUPERADMIN.
+- POST /api/auth/login {email,password,provider:"LOCAL"} → 200; cookie `auth`
+  is **Secure**-flagged → urllib cookiejar won't replay over http → must send
+  the raw Cookie header manually (first /user/self attempts 401'd on this).
+- Route is `/user/self` SINGULAR (mapped-routes list from boot log).
+- probe@mjcx.test = SUPERADMIN w/ org b212558f…; keyLen=64 → written to
+  `.env` POSTIZ_API_KEY (never printed); glue killed → keepalive revived.
+
+### Two MORE latent glue bugs found & fixed on the way
+
+1. Glue called `{POSTIZ_URL}/public/v1/...` — same wrong-prefix disease;
+   would have hit Next's 307/404 once a key existed. Now
+   `POSTIZ_API_BASE = f"{POSTIZ_URL}/api/public/v1"`.
+2. v2.11.2 has NO `GET /public/v1/organizations` (glue would have excepted)
+   AND its middleware reads the RAW key from `Authorization`, not
+   `X-API-KEY`. `_postiz_integrations()` now lists channels from
+   `GET /integrations`; `_postiz_auth()` sends Authorization + X-API-KEY
+   both. Org is derived server-side from the key (createPost ignores body
+   organizationUid here), so no org discovery call at all.
+
+### Raw results
+
+- `POST /api/auth/login` → {"login":true} 200 ✓
+- `GET /api/user/self` → role=SUPERADMIN, publicApi len=64 ✓
+- `GET :13000/api/public/v1/integrations` with key → `[]` (valid key, zero
+  channels — OAuth still Leonard's human step) ✓
+- S9 rerun post-fix: **5/5**, skip reason now clean ("no connected channel")
+  after auth header fix (was 401 string on first rerun — caught & fixed).
+- Gates after ALL glue edits: e2e **13/13** · B4 **12/12** · S9 **5/5** ·
+  voice **PASS**. calc/classifier untouched.
+
+### New trap
+
+44. **Env examples rot across organ versions too.** Postiz docs' current
+    `NEXT_PUBLIC_BACKEND_URL=…/public/v1` matches NEWER backends only; on
+    v2.11.2 it silently redirects auth into the frontend. When an organ's
+    UI fails, read the CONTAINER's nginx access log FIRST (it shows the
+    exact path+status the browser actually hit), then diff against the
+    backend's mapped-routes boot lines. Related: Secure cookies defeat
+    urllib's jar over http — replay the raw Set-Cookie by hand server-side.
+
+### Note for next session
+
+probe@mjcx.test is now the LIVE owner account wired into .env. If Leonard
+creates his own account it becomes a SECOND org with a DIFFERENT key →
+channels must be connected under the SAME org the key belongs to. Either
+he adopts the probe account (rename creds later) or we re-point .env at
+whichever org he keeps.
+
+### Session #14 cont. — EMAIL INQUIRY CHANNEL built (v1-scope hole closed)
+
+Design first: `docs/design-email-channel.md`. Core move: email is a
+TRANSPORT, not a pipeline — pseudo-jid `email:<addr>` makes spine S3/S4/S8,
+`_THREAD` continuity, escalations, SLA beacon and the Threads page work
+UNCHANGED; only the doors differ (IMAP in, SMTP out). Client variation =
+`.env` only (EMAIL_ENABLED/HOSTS/PORTS/USER/PASS/FOLDER/FROM_NAME).
+
+Glue:
+- `_EMAIL_CTX` thread-local carries {to,subject,msg_id} while one message is
+  handled (route() runs inside to_thread workers — thread-local is the only
+  correct scope, trap #41 discipline).
+- `_email_send()` — stdlib smtplib; STARTTLS (:587) or SSL (:465); PDFs
+  attach as real MIME parts (B4 formal quote works over email natively);
+  In-Reply-To/References thread replies in the buyer's mail client.
+- `send_text` / `send_document` dispatch on jid prefix → console take-over
+  needed ZERO changes (it already calls send_text with the conversation's
+  jid; SMTP branch just fires for email:* threads).
+- `_handle_email()` = the email twin of the webhook body (resolve → mirror →
+  route → send → remember → mirror), shared by the poll loop and the gate.
+- `/email/poll` endpoint + `_email_poll_sync`: imaplib UNSEEN search,
+  BODY.PEEK fetch (never let the server mark seen before we succeed),
+  \\Seen stored ONLY after handling; Message-ID dedupe via the existing
+  `_seen` set means worst case after a crash = duplicate answer, never
+  silence. Sync I/O offloaded with asyncio.to_thread (trap #41).
+
+n8n: `workflows/email_poll_tick.json` (1-min clock → /email/poll; import per
+cold-start §; office-hours windowing is a per-client schedule tweak).
+
+Gate `tests/test_email_channel.py`: drives _handle_email with a stubbed
+_email_send against LIVE spine/calc/dify — spec answer ✓, inline computed
+quote ✓ (Q-B92FF0 via calc), complaint escalation armed in S4 ✓, Message-ID
+dedupe ✓, send_text/send_document transport dispatch ✓. **12 passed /
+0 failed** offline; live IMAP round-trip stays a manual --execute drill
+(needs a real mailbox, per-client .env).
+
+Gates after all edits: e2e **13/13** · B4 **12/12** · S9 **5/5** · voice
+**PASS** · email **12/12**.
+
+Note: E2/E3 wrote drill rows into spine (`gate-e1/e3@example.com`
+conversations) — same class of deliberate artifact as the chatwoot drills.
+
+### Session #14 cont. — X5 report FULL DEPTH + auto-delivery
+
+Split by data ownership: SPINE computes, glue delivers, console renders.
+LLM writes nothing here — every number is copied verbatim from the store
+(house rule #1 spirit).
+
+Spine `GET /reports/x5?days=N` (new):
+- conversations: total / ai_handled (bot spoke, never escalated) /
+  escalated / human-only
+- median_response_seconds + measured count (buyer in → next bot/human out;
+  clock artifacts >7d discarded)
+- top_products: quote-line materials+qty UNION SKU/name token hits in buyer
+  inbound text (word-boundary regex over catalog sku+names)
+- kb_misses: SPEC_Q escalations ONLY (OTHER = ambiguity, not a knowledge
+  gap) with "Buyer wrote" snippet; legacy chatwoot-era events carry no note
+  → falls back to the conversation's last buyer line; rows with no
+  conversation at all stay empty (3 legacy rows do — left as-is)
+- escalation_reasons merged across v1.2 (`tag`) and legacy (`intent`) keys
+  (first render showed "? ×23" — the merge fixed it)
+- tier_changes from S8, quotes money stats, sla beacons, social counts
+
+Glue `POST /x5/send?days=30&short=0|1`:
+- `_x5_text()` renders boss-readable WhatsApp text (short = weekly digest);
+  sends to BOSS_WHATSAPP, logs S8 `x5_sent`.
+- LIVE drill: full monthly text delivered to boss WhatsApp ✓ (real phone).
+  Short path verified offline (render only).
+
+n8n: `workflows/x5_monthly_report.json` (1st of month 08:00 Asia/Jakarta),
+`workflows/x5_weekly_digest.json` (Mon 08:00, short). Inactive until
+imported per cold-start.
+
+Console ReportsPage: new KPI row (AI handled X/Y · median response ·
+KB misses count · tier changes), Coverage paragraph, KB-misses table +
+tier-change audit table. tsc/build clean; lint = same 2 pre-existing
+warnings. Raw sample (30d): conv 8 = 2 AI / 3 esc / 3 human · median 23s ·
+top ATS-50 ×270 · quotes 110 value 1,314,347 · beacons 9.
+
+Queued refinement (with #34): structured [NOT_FOUND] marker will make
+kb_misses exact instead of escalation-tag-proxied.
+
+### Session #14 cont. — :8090 STAMP SHIPPED (dashboard no longer dev-only)
+
+console/Dockerfile rebuilt per console-plan §2: node:22 build stage →
+**caddy** serves the SPA + same-origin organ proxies. KEY CHANGE vs the old
+nginx.conf: upstreams are env-overridable (`{$SPINE_UPSTREAM:…}` /
+`{$GLUE_UPSTREAM:…}`) because the SAME image must serve two topologies —
+
+- dev (today): spine/glue are HOST uvicorns →
+  `SPINE_UPSTREAM=host.docker.internal:8101 GLUE_UPSTREAM=host.docker.internal:8102`
+  (trap #22 honored; colima resolves it)
+- appliance stamp (compose): containerized organs by name →
+  `SPINE_UPSTREAM=spine:8101 GLUE_UPSTREAM=glue:8102` (set in compose
+  console service; extra_hosts host-gateway added for linux portability)
+
+Trap hit live: caddy `reverse_proxy` does NOT strip path prefixes
+(nginx's trailing-slash proxy_pass did) → first boot returned FastAPI 404s.
+Fix: `handle_path` (= vite dev-proxy behavior). nginx.conf deleted;
+console/.dockerignore added (node_modules/dist out of context).
+
+Verified LIVE on :8090: SPA 200 · deep route /inbox 200 ·
+/spine/health + /glue/health OK through the proxy · organs endpoint 401
+without token / 200 with CONSOLE_TOKEN. Running as container `console-stamp`
+(dev topology); compose service ready for full-stamp deployments.
+
+Chatwoot containers still RUNNING but unused — stop still awaits Leonard's
+visual soak sign-off (rollback proxies kept until then).
+
+### Session #14 gates (FULL board after all edits)
+
+calc 22/22 (untouched) · e2e **13/13** · voice **PASS** · B4 **12/12** ·
+S9 **5/5** · **email 12/12** · O5 auto **10/10** (re-run post-email-edits;
+first attempt hit a transient GLM SSL read-timeout, clean pass on rerun) ·
+console tsc/build clean + lint = the same 2 pre-existing warnings. Classify
+N/A (triage prompts untouched). DRY_RUN untouched by email gate (stubbed
+transport writes nothing to organs; spine rows are drill artifacts).

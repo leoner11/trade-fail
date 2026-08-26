@@ -38,7 +38,7 @@
   "size_coefficients": [
     {
       "size": "STD",
-      "coefficient": 1.0,
+      "coefficient": 1,
       "note": "standard configuration"
     },
     {
@@ -99,7 +99,7 @@
   "customer_tiers": [
     {
       "name": "new",
-      "price_factor": 1.0,
+      "price_factor": 1,
       "payment_terms": "T/T 30% deposit, 70% before shipment"
     },
     {

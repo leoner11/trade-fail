@@ -32,11 +32,14 @@ v1 = inquiry auto-response → quoting → social. The Bible: `WEAVE_PLAN.md`,
 | O5 acceptance | ✅ auto scenarios **10/10** incl. off-domain S8b | `tests/test_o5_acceptance.py` |
 | Voice layer | ✅ generated replies, digit/link/capability guards | voice_guide.md rules 1–8 |
 | Appliance Console | ✅ **SHIPPED** — M0–M5: runtime views, WA QR connect, KB+O2 gate, pricing+O3 gate, go-live page, voice samples editor, X5 report. :8090 in stamp, token-gated | `console/`, `docs/console-plan.md` |
+| Email inquiry channel | ✅ **BUILT (#14)** — pseudo-jid `email:*` through the SAME route(); IMAP poll + SMTP replies; escalations arm the same Threads store | glue `_handle_email`+`/email/poll`, `docs/design-email-channel.md`, gate 12/12 |
+| X5 report full depth | ✅ **BUILT (#14)** — spine `/reports/x5` computes (AI vs escalated, median response, KB misses, reasons, tier_change); `/x5/send` delivers to boss WA (drilled live); monthly+weekly n8n clocks | spine_api, glue `_x5_text`, console ReportsPage |
+| :8090 stamp | ✅ **LIVE (#14)** — caddy serves SPA + /spine /glue proxies; dual-topology upstreams (host uvicorns ↔ compose names) | `console/Dockerfile`, `console/Caddyfile`, container `console-stamp` |
 
-**Gate board (after session #13, 2026-08-25):** calc 22/22 · e2e 13/13 ·
-classify PASS 17/17 · voice PASS 8/8 (expanded: capability + not-ours
-cases) · B4 12/12 · O2 20/20+0fab (last run; skipped #13 with cause —
-dify apps untouched) · O5 auto 10/10 · S9 5/5 · O3 example-mode ✓.
+**Gate board (after session #14, 2026-08-26):** calc 22/22 · e2e 13/13 ·
+voice PASS 8/8 · B4 12/12 · S9 5/5 · **email 12/12** (new) · **O5 auto
+10/10** (re-run after the email-channel glue edits) · console build/lint
+clean. O2 skipped #13–#14 with cause (dify apps untouched).
 Run them: they are plain scripts under `tests/`. If the data story changes,
 re-run EVERY gate — stale fixtures bite (spike-log traps #29/#30).
 
@@ -73,39 +76,30 @@ STS-200): S1 catalog = S2 `pricing_rules.generators.json` = dify KB
 
 ## 5. NEXT SESSION — in order
 
-1. **O3 real pricing (the go-live gate)** — run
-   `runbooks/o3-pricing-interview.md` with Leonard's boss; capture answers
-   into a new rules JSON + 10–20 real quotes into `data/o3_history.json`;
-   `tests/test_o3_backtest.py` must hit ≥90% within ±2% before ANY client
-   go-live. Harness already runs in EXAMPLE mode so you can verify plumbing.
-   NOTE: rules now ship as schema v3 — keep `price_visibility` when writing
-   the boss's real file (the editor round-trips it automatically).
-2. **Postiz channel connect** — owner signup at :13000, connect channels,
-   create API key → `.env POSTIZ_API_KEY` → restart glue → rerun
-   `tests/test_o5_s9_social.py --expect-scheduled`.
-3. **Physical phone drills** — S4 PDF-in-thread confirm (already delivered
-   once ✓, repeat on a clean ask); S10 real drop:
-   `tests/test_o5_s10_qr_drill.py --execute` (target <5 min self-serve).
-   Eyeball the Inbox tab on :8090/:5173 (drill conv #3 open) AND the new
-   voice behavior artifacts in chatwoot convs #3/#4 (session #13).
-4. **Voice overhaul DONE (session #13, 2026-08-25)** — replies no longer
-   stall/re-greet/pitch generically; grounded "not our line" + pivot,
-   concrete capability answers from S1 facts, thread continuity, zh
-   softeners + seeded samples (from Leonard's real-thread evidence), and
-   offer fulfillment: the bot now DELIVERS when the buyer accepts its own
-   offer ("yes please" → details/PDF), never hands off (traps #35/#36).
-   Quantity replies close the sale loop inline ("10 units" → computed
-   quote; trap #40). Verified on Leonard's real phone. Follow-up queued:
-   dify spec DSL still fake-promises "let me check" on attribute misses
-   (trap #34) — needs structured marker + re-import.
-5. **v1.2 THREADS DONE (session #13 cont., 2026-08-26)** — chatwoot removed
-   from the loop (installed, disabled): spine S4 store mirrors every line;
-   console Threads page = escalations + take-over via evo direct;
-   sla_tick reads spine. Event-loop lag fixed (trap #41 — webhook routing
-   offloaded). Soak it, then stop the chatwoot containers and ship the
-   :8090 caddy stamp.
-6. Optional polish: webhook-auth hardening design doc (buyer webhook is
-   deliberately open); X5 report: surface S8 `tier_change` events.
+1. **Leonard soak + sign-offs (session #15 opener):**
+   - Threads tab visual pass (:8090 now LIVE or :5173) → if happy, STOP the
+     chatwoot containers (compose override; rollback proxies stay).
+   - Postiz: signup should work now (#14 fixed `NEXT_PUBLIC_BACKEND_URL`).
+     Owner account is ALREADY probe@mjcx.test / ProbeTest123! (SUPERADMIN,
+     key wired into .env). Connect ≥1 channel under THAT org (OAuth popup)
+     → rerun `tests/test_o5_s9_social.py --expect-scheduled`. If he wants
+     his own account instead: channels live per-org — re-point .env at his
+     org's key via login→`GET /api/user/self`→`publicApi`.
+   - Phone drills: S4 PDF-in-thread repeat · S10 live QR drop
+     (`tests/test_o5_s10_qr_drill.py --execute`).
+   - SCOPE QUESTIONS for boss: (a) margin data model — cost field in S2
+     rows so calc computes margin internally (X4/X5)? (b) marketplace
+     listings — v1 scope or phase 2?
+2. **O3 real pricing (THE go-live gate)** — run
+   `runbooks/o3-pricing-interview.md`; ≥10 REAL quotes into
+   `data/o3_history.json` (gitignored); backtest ≥90% within ±2% before ANY
+   client go-live. Keep price_visibility when writing the real rules file.
+3. **Email channel live round-trip** — wire client mailbox creds into .env,
+   import n8n email_poll_tick.json, send a real mail, target <60s.
+4. **X5 clocks** — import x5_monthly/x5_weekly n8n workflows and activate.
+5. Optional polish: dify spec DSL fake-promise #34 (structured marker +
+   re-import; then kb_misses becomes exact), webhook-auth hardening DESIGN
+   DOC, escalation-note dedupe glue-side, voice-gate zh variation flake.
 
 ## 6. REPORTING BACK
 
