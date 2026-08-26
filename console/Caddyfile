@@ -14,6 +14,11 @@
 	handle_path /glue/* {
 		reverse_proxy {$GLUE_UPSTREAM:host.docker.internal:8102}
 	}
+	# postiz stores channel avatars under FRONTEND_URL + /uploads — serve them
+	# from the engine (prefix KEPT: postiz nginx expects /uploads/...)
+	handle /uploads/* {
+		reverse_proxy {$POSTIZ_UPLOADS:host.docker.internal:13000}
+	}
 	handle {
 		root * /srv
 		try_files {path} /index.html

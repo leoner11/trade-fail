@@ -47,6 +47,7 @@ import ssl
 import subprocess
 import threading
 import time
+import datetime
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1557,18 +1558,38 @@ def _postiz_integrations() -> list:
         return json.loads(r.read())
 
 
-def _push_to_postiz(caption: str, hashtags: str, when: str) -> tuple[bool, str]:
+def _push_to_postiz(caption: str, hashtags: str, when: str,
+                    image: list | None = None) -> tuple[bool, str]:
     """C4-1: create a scheduled post. Needs POSTIZ_API_KEY + at least one
-    connected channel in postiz; anything missing -> graceful skip."""
+    connected {platform} channel; anything missing -> graceful skip.
+    Payload shape per v2.11.2 CreatePostDto (trap #46c): {type, shortLink,
+    date, tags[], posts[{integration:{id}, value:[{content, image?}]}]}."""
     if not POSTIZ_API_KEY:
         return False, "POSTIZ_API_KEY not configured"
     try:
         integrations = _postiz_integrations()
-        if not integrations:
-            return False, "no connected channel in postiz yet"
+        chan = next((i for i in integrations if isinstance(i, dict)
+                     and i.get("identifier") == POSTIZ_PLATFORM), None)
+        if not chan:
+            return False, f"no connected {POSTIZ_PLATFORM} channel yet"
+        when = (when or "").strip()
+        try:
+            datetime.datetime.fromisoformat(when.replace("Z", "+00:00"))
+        except ValueError:
+            # pending drafts carry no time -> default next day 09:00 local
+            d = (datetime.datetime.now() + datetime.timedelta(days=1)) \
+                .replace(hour=9, minute=0, second=0, microsecond=0)
+            when = d.isoformat(timespec="seconds")
+        entry = {"content": f"{caption}\n\n{hashtags}"}
+        if image:
+            entry["image"] = image
         body = json.dumps({
+            "type": "schedule",
+            "shortLink": False,
             "date": when,
-            "settings": {POSTIZ_PLATFORM: [{"content": f"{caption}\n\n{hashtags}"}]},
+            "tags": [],
+            "posts": [{"integration": {"id": chan["id"]},
+                       "value": [entry]}],
         }).encode()
         req = urllib.request.Request(
             f"{POSTIZ_API_BASE}/posts", data=body, method="POST",

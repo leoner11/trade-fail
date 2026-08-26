@@ -226,6 +226,8 @@ services:
       # the Community Management product (org scopes unauthorized → consent
       # hard-fails). Read-only mount survives container recreation.
       - ../compose/postiz-patches/linkedin.provider.js:/app/apps/backend/dist/libraries/nestjs-libraries/src/integrations/social/linkedin.provider.js:ro
+      # trap #46b: avatar CDN 403s must not abort channel creation
+      - ../compose/postiz-patches/local.storage.js:/app/apps/backend/dist/libraries/nestjs-libraries/src/upload/local.storage.js:ro
     networks: [appliance]
     restart: unless-stopped
 
