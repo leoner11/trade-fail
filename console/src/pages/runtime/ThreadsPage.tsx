@@ -1,23 +1,25 @@
-import { Bot, Send } from 'lucide-react'
+import { Bot, CheckCheck, Send } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { glueApi } from '../../api/glue'
-import type { InboxConversation, InboxMessage } from '../../api/glue'
+import { spine } from '../../api/spine'
+import type { ThreadMsg, ThreadRow } from '../../api/spine'
 import { Button } from '../../components/ui/Button'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { SkeletonRows } from '../../components/ui/Skeleton'
 import { StatusBadge } from '../../components/ui/StatusBadge'
-import { formatChatStamp, formatClock, truncateMiddle } from '../../lib/format'
+import { formatStamp, truncateMiddle } from '../../lib/format'
 import { usePoll } from '../../lib/usePoll'
 
 const REFRESH_MS = 5000
 
-export function InboxPage() {
+export function ThreadsPage() {
   const [params, setParams] = useSearchParams()
   const activeId = params.get('c') ?? ''
-  const convs = usePoll(() => glueApi.inboxConversations(), REFRESH_MS)
+  const threads = usePoll(() => spine.listThreads('open'), REFRESH_MS)
 
-  const rows = convs.data?.items ?? []
+  const rows = threads.data?.items ?? []
   const selected = rows.find((c) => String(c.id) === activeId)
 
   return (
@@ -25,18 +27,18 @@ export function InboxPage() {
       <div className="min-h-0 overflow-y-auto rounded-lg border border-line bg-surface-card">
         <ConversationList
           rows={rows}
-          loading={convs.loading}
-          error={convs.error}
+          loading={threads.loading}
+          error={threads.error}
           activeId={activeId}
           onSelect={(c) => setParams(c ? { c: String(c.id) } : {})}
         />
       </div>
       {selected ? (
-        <ThreadPanel key={selected.id} cid={selected.id} />
+        <ThreadPanel key={selected.id} row={selected} />
       ) : (
         <div className="hidden items-center justify-center rounded-lg border border-dashed border-line lg:flex">
           <p className="text-body text-text-muted">
-            Select a conversation — live from the WhatsApp inbox.
+            Select a thread — every buyer chat lands here (spine store).
           </p>
         </div>
       )}
@@ -51,11 +53,11 @@ function ConversationList({
   activeId,
   onSelect,
 }: {
-  rows: InboxConversation[]
+  rows: ThreadRow[]
   loading: boolean
   error: string | null
   activeId: string
-  onSelect: (c?: InboxConversation) => void
+  onSelect: (c?: ThreadRow) => void
 }) {
   if (loading && !rows.length)
     return (
@@ -66,13 +68,14 @@ function ConversationList({
   if (error && !rows.length)
     return (
       <p className="p-4 text-body text-[#B91C1C]">
-        Inbox unavailable — is chatwoot on :3000? ({error})
+        Threads unavailable — is the store on :8101? ({error})
       </p>
     )
   return (
     <ul className="divide-y divide-line">
       {rows.map((c) => {
         const active = String(c.id) === activeId
+        const stamp = formatStamp(c.last_in_at || c.updated_at)
         return (
           <li key={c.id}>
             <button
@@ -83,47 +86,43 @@ function ConversationList({
               style={active ? { boxShadow: 'inset 2px 0 0 var(--brand-primary)' } : undefined}
             >
               <div className="flex items-baseline justify-between gap-2">
-                <span className="truncate text-body font-medium text-text-primary">
-                  {c.contact_name}
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="truncate text-body font-medium text-text-primary">
+                    {c.contact_name || truncateMiddle(c.wa_jid, 28)}
+                  </span>
+                  {c.escalation_tag && (
+                    <StatusBadge tone="attention" label={c.escalation_tag} />
+                  )}
                 </span>
-                <span className="shrink-0 text-caption text-text-muted">
-                  {formatChatStamp(c.last_activity_at)}
-                </span>
+                <span className="shrink-0 text-caption text-text-muted">{stamp}</span>
               </div>
               <div className="mt-0.5 flex items-center justify-between gap-2">
                 <span className="truncate text-caption text-text-secondary">
-                  {c.last_buyer_line || truncateMiddle(c.identifier || `#${c.id}`, 40)}
+                  {c.preview || truncateMiddle(c.wa_jid, 40)}
                 </span>
-                {c.unread_count > 0 && (
-                  <span className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full px-1.5 text-micro font-semibold text-white"
-                    style={{ background: 'var(--st-attention-dot)' }}>
-                    {c.unread_count}
-                  </span>
-                )}
               </div>
             </button>
           </li>
         )
       })}
       {!rows.length && (
-        <li className="p-4 text-body text-text-muted">
-          No open conversations yet.
-        </li>
+        <li className="p-4 text-body text-text-muted">No open conversations yet.</li>
       )}
     </ul>
   )
 }
 
-function ThreadPanel({ cid }: { cid: number }) {
-  const thread = usePoll(() => glueApi.inboxMessages(cid), REFRESH_MS)
+function ThreadPanel({ row }: { row: ThreadRow }) {
+  const cid = row.id
+  const thread = usePoll(() => spine.getThread(cid), REFRESH_MS)
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState('')
+  const [confirmResolve, setConfirmResolve] = useState(false)
+  const [resolving, setResolving] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  const msgs = (thread.data?.messages ?? []).filter(
-    (m) => !m.private && m.message_type !== 2,
-  )
+  const msgs = thread.data?.items ?? []
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView()
@@ -136,7 +135,7 @@ function ThreadPanel({ cid }: { cid: number }) {
     setSending(true)
     setSendError('')
     try {
-      await glueApi.inboxReply(cid, content)
+      await glueApi.threadsReply(cid, content)
       setDraft('')
       await thread.refresh()
     } catch (err) {
@@ -146,22 +145,38 @@ function ThreadPanel({ cid }: { cid: number }) {
     }
   }
 
+  async function resolve() {
+    setResolving(true)
+    try {
+      await spine.setThreadStatus(cid, 'resolved')
+      setConfirmResolve(false)
+      await thread.refresh()
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : String(err))
+      setConfirmResolve(false)
+    } finally {
+      setResolving(false)
+    }
+  }
+
   return (
     <div className="flex min-h-0 flex-col rounded-lg border border-line bg-surface-card">
       <header className="flex shrink-0 items-center justify-between gap-3 border-b border-line px-4 py-3">
         <div className="min-w-0">
           <h2 className="truncate text-section font-semibold text-text-primary">
-            {thread.data?.contact.name ?? `Conversation #${cid}`}
+            {row.contact_name || `Conversation #${cid}`}
           </h2>
-          <p className="mono truncate text-caption text-text-muted">
-            {thread.data?.contact.identifier || ''}
-          </p>
+          <p className="mono truncate text-caption text-text-muted">{row.wa_jid}</p>
         </div>
-        {thread.data?.status &&
-          thread.data.status !== 'open' && (
-            <StatusBadge tone={thread.data.status === 'resolved' ? 'success' : 'neutral'}
-              label={thread.data.status} />
+        <div className="flex shrink-0 items-center gap-2">
+          {row.escalation_tag && (
+            <StatusBadge tone="attention" label={`${row.escalation_tag} pending`} />
           )}
+          <Button variant="ghost" size="sm" onClick={() => setConfirmResolve(true)}>
+            <CheckCheck size={15} strokeWidth={1.75} />
+            Resolve
+          </Button>
+        </div>
       </header>
 
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
@@ -170,8 +185,7 @@ function ThreadPanel({ cid }: { cid: number }) {
           <p className="text-body text-[#B91C1C]">Thread unavailable ({thread.error})</p>
         )}
         {msgs.map((m) => (
-          <Bubble key={m.id} m={m} botIds={thread.data?.bot_sender_ids ?? []}
-            agents={thread.data?.agents ?? {}} />
+          <Bubble key={m.id} m={m} />
         ))}
         <div ref={bottomRef} />
       </div>
@@ -195,43 +209,49 @@ function ThreadPanel({ cid }: { cid: number }) {
           </Button>
         </div>
         <p className="text-micro text-text-muted">
-          Public reply under your admin identity — evo delivers it to the buyer;
-          the SLA beacon stops for this conversation once a human has replied.
+          Sent to the buyer over WhatsApp via evo; your reply clears any pending
+          escalation and stops the SLA beacon for this conversation.
         </p>
       </form>
+
+      <ConfirmDialog
+        open={confirmResolve}
+        title="Resolve this conversation?"
+        body={`Marks thread #${cid} as resolved and clears its escalation flag. It reopens automatically if ${row.contact_name || 'the buyer'} writes again.`}
+        confirmLabel="Resolve"
+        busy={resolving}
+        onCancel={() => setConfirmResolve(false)}
+        onConfirm={resolve}
+      />
     </div>
   )
 }
 
-function Bubble({
-  m,
-  botIds,
-  agents,
-}: {
-  m: InboxMessage
-  botIds: number[]
-  agents: Record<string, string>
-}) {
-  const incoming = m.message_type === 0
-  const isBot = !incoming && m.sender_id != null && botIds.includes(m.sender_id)
-  const author = isBot
-    ? 'AI assistant'
-    : m.sender_name || (m.sender_id != null ? agents[String(m.sender_id)] : '')
-
-  if (incoming) {
+function Bubble({ m }: { m: ThreadMsg }) {
+  if (m.sender_kind === 'system') {
     return (
-      <div className="flex flex-col items-start">
-        <div className="max-w-[80%] whitespace-pre-wrap rounded-lg rounded-bl-sm border border-line bg-surface-subtle px-3.5 py-2.5 text-body leading-relaxed text-text-primary">
-          {m.content}
-        </div>
-        <span className="mt-1 px-1 text-micro text-text-muted">{formatClock(m.created_at)}</span>
+      <div className="flex justify-center">
+        <p className="max-w-[85%] whitespace-pre-wrap rounded-md bg-surface-subtle px-3 py-1.5 text-center text-micro leading-relaxed text-text-muted">
+          {m.body}
+        </p>
       </div>
     )
   }
 
-  return (
-    <div className="flex flex-col items-end">
-      {isBot ? (
+  if (m.direction === 'in') {
+    return (
+      <div className="flex flex-col items-start">
+        <div className="max-w-[80%] whitespace-pre-wrap rounded-lg rounded-bl-sm border border-line bg-surface-subtle px-3.5 py-2.5 text-body leading-relaxed text-text-primary">
+          {m.body}
+        </div>
+        <span className="mt-1 px-1 text-micro text-text-muted">{formatStamp(m.ts)}</span>
+      </div>
+    )
+  }
+
+  if (m.sender_kind === 'bot') {
+    return (
+      <div className="flex flex-col items-end">
         <div
           className="max-w-[80%] rounded-lg rounded-br-sm border px-3.5 py-2.5"
           style={{ background: 'var(--ai-wash)', borderColor: 'var(--ai-dot)' }}
@@ -242,20 +262,23 @@ function Bubble({
             AI assistant
           </p>
           <p className="whitespace-pre-wrap text-body leading-relaxed text-text-primary">
-            {m.content}
+            {m.body}
           </p>
         </div>
-      ) : (
-        <div className="max-w-[80%] rounded-lg rounded-br-sm border border-line bg-surface-card px-3.5 py-2.5">
-          {author && (
-            <p className="mb-1 text-micro font-medium text-text-secondary">{author}</p>
-          )}
-          <p className="whitespace-pre-wrap text-body leading-relaxed text-text-primary">
-            {m.content}
-          </p>
-        </div>
-      )}
-      <span className="mt-1 px-1 text-micro text-text-muted">{formatClock(m.created_at)}</span>
+        <span className="mt-1 px-1 text-micro text-text-muted">{formatStamp(m.ts)}</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col items-end">
+      <div className="max-w-[80%] rounded-lg rounded-br-sm border border-line bg-surface-card px-3.5 py-2.5">
+        <p className="mb-1 text-micro font-medium text-text-secondary">You</p>
+        <p className="whitespace-pre-wrap text-body leading-relaxed text-text-primary">
+          {m.body}
+        </p>
+      </div>
+      <span className="mt-1 px-1 text-micro text-text-muted">{formatStamp(m.ts)}</span>
     </div>
   )
 }

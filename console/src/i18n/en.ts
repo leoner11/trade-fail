@@ -7,7 +7,7 @@ export const T = {
     setup: 'Setup',
     runtime: 'Runtime',
     home: 'Home',
-    inbox: 'Inbox',
+    inbox: 'Threads',
     quotes: 'Quotes',
     customers: 'Customers',
     social: 'Social',
@@ -22,7 +22,7 @@ export const T = {
   },
   titles: {
     '/': 'Home',
-    '/inbox': 'Inbox — WhatsApp chats',
+    '/inbox': 'Threads — WhatsApp conversations',
     '/quotes': 'Quotes',
     '/customers': 'Customers',
     '/social': 'Social queue',

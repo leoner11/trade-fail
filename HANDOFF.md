@@ -19,7 +19,7 @@ v1 = inquiry auto-response → quoting → social. The Bible: `WEAVE_PLAN.md`,
 |---|---|---|
 | Phase A intake→triage→RAG | ✅ live | glue :8102 → dify :8180 (GLM fallback) |
 | A4 KB answers + never-guess | ✅ **O2 quiz 20/20, 0 fabrications** | `tests/test_o2_quiz.py` |
-| A6 escalation + human loop | ✅ chatwoot :3000, evo native bridge ON | spike-log A6 entry |
+| A6 escalation + human loop | ✅ **v1.2: spine S4 store** — chatwoot OFF (`CHATWOOT_ENABLED=0`), Threads page in console, take-over via evo direct, sla_tick reads spine | glue `_mirror`+`escalate`, `/console/threads/*`, spine `/conversations/*` |
 | B inline quotes | ✅ calc :8100 (generator rules), S5 save+sent | `tests/e2e_spike.py` 13/13 |
 | B4 formal PDF in chat | ✅ carbone :8200 + soffice → evo sendMedia | `tests/test_b4.py` 12/12 |
 | B5 human quote path | ✅ gaps hint lands in chatwoot w/ draft | glue escalate hooks |
@@ -92,13 +92,18 @@ STS-200): S1 catalog = S2 `pricing_rules.generators.json` = dify KB
    softeners + seeded samples (from Leonard's real-thread evidence), and
    offer fulfillment: the bot now DELIVERS when the buyer accepts its own
    offer ("yes please" → details/PDF), never hands off (traps #35/#36).
-   Verified on Leonard's real phone. Follow-up queued: dify spec DSL still
-   fake-promises "let me check" on attribute misses (trap #34) — needs
-   structured marker + re-import.
-5. Optional polish: escalation-note dedupe in chatwoot (consecutive OTHER
-   escalations re-arm the same conversation with identical notes — visible
-   in conv #4); webhook-auth hardening design doc (buyer webhook is
-   deliberately open); X5 report: surface the new S8 `tier_change` events.
+   Quantity replies close the sale loop inline ("10 units" → computed
+   quote; trap #40). Verified on Leonard's real phone. Follow-up queued:
+   dify spec DSL still fake-promises "let me check" on attribute misses
+   (trap #34) — needs structured marker + re-import.
+5. **v1.2 THREADS DONE (session #13 cont., 2026-08-26)** — chatwoot removed
+   from the loop (installed, disabled): spine S4 store mirrors every line;
+   console Threads page = escalations + take-over via evo direct;
+   sla_tick reads spine. Event-loop lag fixed (trap #41 — webhook routing
+   offloaded). Soak it, then stop the chatwoot containers and ship the
+   :8090 caddy stamp.
+6. Optional polish: webhook-auth hardening design doc (buyer webhook is
+   deliberately open); X5 report: surface S8 `tier_change` events.
 
 ## 6. REPORTING BACK
 

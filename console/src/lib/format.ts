@@ -56,3 +56,15 @@ export function formatChatStamp(unixSecs?: number | null): string {
   if (d.toDateString() === now.toDateString()) return formatClock(unixSecs)
   return `${d.getDate()} ${MONTHS[d.getMonth()]}`
 }
+
+export function formatStamp(ts?: string | null): string {
+  // spine "YYYY-MM-DD HH:MM:SS" (UTC) variant of the list-row stamp
+  if (!ts) return ''
+  const d = parseTs(ts)
+  if (Number.isNaN(d.getTime())) return ts
+  const now = new Date()
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  if (d.toDateString() === now.toDateString()) return `${hh}:${mm}`
+  return `${d.getDate()} ${MONTHS[d.getMonth()]}, ${hh}:${mm}`
+}

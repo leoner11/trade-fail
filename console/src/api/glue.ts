@@ -132,6 +132,12 @@ export const glueApi = {
       method: 'POST',
       body: JSON.stringify({ content }),
     }),
+  // v1.2 threads — spine store, take-over sends via evo directly
+  threadsReply: (cid: number | string, content: string) =>
+    apiFetch<{ ok: boolean; conversation_id: number; to: string }>(
+      `/glue/console/threads/${cid}/reply`,
+      { method: 'POST', body: JSON.stringify({ content }) },
+    ),
 }
 
 export interface InboxConversation {

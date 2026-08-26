@@ -419,6 +419,193 @@ def recent_events(kind: str = "", limit: int = 20):
     return {"items": [dict(r) for r in rows]}
 
 
+# ---------- S4: conversations (v1.2 — chatwoot-replacement store) ----------
+
+def _ensure_convo_tables():
+    """Live migration for the running spike DB (init_db wipes; this must not).
+    Safe to call repeatedly."""
+    with con() as c:
+        c.executescript("""
+        CREATE TABLE IF NOT EXISTS conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            wa_jid TEXT UNIQUE NOT NULL,
+            contact_name TEXT,
+            status TEXT DEFAULT 'open',
+            escalation_tag TEXT,
+            escalated_at TEXT,
+            sla_beacon_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL REFERENCES conversations(id),
+            direction TEXT NOT NULL,
+            sender_kind TEXT NOT NULL,
+            body TEXT NOT NULL,
+            ts TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
+
+_ensure_convo_tables()
+
+
+class ConvoUpsertIn(BaseModel):
+    wa_jid: str
+    name: str | None = None
+
+
+@app.post("/conversations/upsert")
+def conversation_upsert(inp: ConvoUpsertIn):
+    with con() as c:
+        row = c.execute("SELECT * FROM conversations WHERE wa_jid=?",
+                        (inp.wa_jid,)).fetchone()
+        if row:
+            if inp.name and inp.name != row["contact_name"]:
+                c.execute("UPDATE conversations SET contact_name=?, "
+                          "updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                          (inp.name, row["id"]))
+            return {"conversation_id": row["id"], "created": False}
+        cur = c.execute(
+            "INSERT INTO conversations (wa_jid, contact_name) VALUES (?,?)",
+            (inp.wa_jid, inp.name))
+        return {"conversation_id": cur.lastrowid, "created": True}
+
+
+class MessageIn(BaseModel):
+    direction: str            # in | out
+    sender_kind: str          # buyer | bot | human | system
+    body: str
+
+
+@app.post("/conversations/{cid}/messages")
+def append_message(cid: int, inp: MessageIn):
+    if inp.direction not in ("in", "out"):
+        raise HTTPException(400, "direction must be in|out")
+    if inp.sender_kind not in ("buyer", "bot", "human", "system"):
+        raise HTTPException(400, "sender_kind must be buyer|bot|human|system")
+    if not inp.body.strip():
+        raise HTTPException(400, "empty body")
+    with con() as c:
+        row = c.execute("SELECT * FROM conversations WHERE id=?", (cid,)).fetchone()
+        if not row:
+            raise HTTPException(404, f"unknown conversation {cid}")
+        cur = c.execute(
+            "INSERT INTO messages (conversation_id, direction, sender_kind, body) "
+            "VALUES (?,?,?,?)",
+            (cid, inp.direction, inp.sender_kind, inp.body))
+        # a HUMAN outbound = handled-by-person: clears any armed escalation.
+        sets = "updated_at=CURRENT_TIMESTAMP"
+        args: list = []
+        if inp.sender_kind == "human" and row["escalation_tag"]:
+            sets += ", escalation_tag=NULL, escalated_at=NULL"
+        if inp.direction == "in" and row["status"] == "resolved":
+            sets += ", status='open'"
+        c.execute(f"UPDATE conversations SET {sets} WHERE id=?",
+                  (*args, cid))
+        return {"message_id": cur.lastrowid}
+
+
+@app.get("/conversations")
+def list_conversations(status: str = "open", include_last: int = 1,
+                       limit: int = 100):
+    """Console threads feed. include_last=1 adds per-conversation last
+    activity timestamps so the SLA tick can filter WITHOUT N+1 queries."""
+    sql = "SELECT * FROM conversations"
+    args: list = []
+    if status:
+        sql += " WHERE status=?"
+        args.append(status)
+    sql += " ORDER BY updated_at DESC LIMIT ?"
+    args.append(limit)
+    with con() as c:
+        items = []
+        for r in c.execute(sql, args).fetchall():
+            d = dict(r)
+            if include_last:
+                agg = c.execute(
+                    """SELECT MAX(CASE WHEN direction='in' THEN ts END) AS last_in_at,
+                              MAX(CASE WHEN sender_kind='human' THEN ts END) AS last_human_out_at
+                       FROM messages WHERE conversation_id=?""",
+                    (r["id"],)).fetchone()
+                d["last_in_at"] = agg["last_in_at"]
+                d["last_human_out_at"] = agg["last_human_out_at"]
+                prev = c.execute(
+                    "SELECT body FROM messages WHERE conversation_id=? "
+                    "ORDER BY id DESC LIMIT 1", (r["id"],)).fetchone()
+                d["preview"] = (prev["body"][:120] if prev else "")
+            items.append(d)
+    return {"items": items}
+
+
+@app.get("/conversations/{cid}/messages")
+def thread_messages(cid: int):
+    with con() as c:
+        row = c.execute("SELECT * FROM conversations WHERE id=?", (cid,)).fetchone()
+        if not row:
+            raise HTTPException(404, f"unknown conversation {cid}")
+        msgs = [dict(m) for m in c.execute(
+            "SELECT id, direction, sender_kind, body, ts FROM messages "
+            "WHERE conversation_id=? ORDER BY id", (cid,)).fetchall()]
+    return {"conversation": dict(row), "items": msgs}
+
+
+class EscalateIn(BaseModel):
+    tag: str
+    note: str = ""
+
+
+@app.post("/conversations/{cid}/escalate")
+def escalate_conversation(cid: int, inp: EscalateIn):
+    """Arm the escalation flag + write the S8 event. The staff-facing note
+    is stored as a system message so the console thread shows WHY."""
+    with con() as c:
+        row = c.execute("SELECT * FROM conversations WHERE id=?", (cid,)).fetchone()
+        if not row:
+            raise HTTPException(404, f"unknown conversation {cid}")
+        c.execute(
+            "UPDATE conversations SET escalation_tag=?, escalated_at=CURRENT_TIMESTAMP, "
+            "status='open', sla_beacon_at=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (inp.tag, cid))
+        if inp.note.strip():
+            c.execute(
+                "INSERT INTO messages (conversation_id, direction, sender_kind, body) "
+                "VALUES (?,?,?,?)",
+                (cid, "out", "system", f"[ESCALATION {inp.tag}] {inp.note}"))
+        c.execute("INSERT INTO events (kind, detail_json) VALUES (?,?)",
+                  ("escalation", json.dumps({
+                      "conversation_id": cid, "wa_jid": row["wa_jid"],
+                      "tag": inp.tag, "note": inp.note[:500]})))
+    return {"ok": True, "tag": inp.tag}
+
+
+@app.post("/conversations/{cid}/sla_beacon")
+def mark_sla_beacon(cid: int):
+    with con() as c:
+        cur = c.execute(
+            "UPDATE conversations SET sla_beacon_at=CURRENT_TIMESTAMP, "
+            "updated_at=CURRENT_TIMESTAMP WHERE id=?", (cid,))
+        if cur.rowcount == 0:
+            raise HTTPException(404, f"unknown conversation {cid}")
+    return {"ok": True}
+
+
+@app.post("/conversations/{cid}/status")
+def set_conversation_status(cid: int, status: str = Body(..., embed=True)):
+    valid = {"open", "resolved"}
+    if status not in valid:
+        raise HTTPException(400, f"status must be one of {sorted(valid)}")
+    with con() as c:
+        cur = c.execute(
+            "UPDATE conversations SET status=?, escalation_tag=NULL, "
+            "escalated_at=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (status, cid))
+        if cur.rowcount == 0:
+            raise HTTPException(404, f"unknown conversation {cid}")
+    return {"conversation_id": cid, "status": status}
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "store": str(DB)}

@@ -1651,3 +1651,71 @@ use to_thread or async clients.
 
 ### Gates: calc 22/22 · e2e 13/13 · voice PASS · B4 12/12 · S9 5/5 ·
 O5 auto **10/10**.
+
+---
+
+## Session #13 cont. 5 (02:xx) — v1.2 THREADS: chatwoot removed from the loop
+
+Leonard decision (02:0x): "we are not gonna use chatwoot anymore" —
+escalations live on a dashboard page instead; spine becomes THE conversation
+store (X1 gets cleaner: one runtime store). Agreed plan: keep chatwoot
+installed but disabled-by-default (`CHATWOOT_ENABLED=0`), rollback path
+preserved.
+
+### Spine (S4 store)
+
+- `conversations` (wa_jid UNIQUE, contact_name, status open|resolved,
+  escalation_tag/escalated_at, sla_beacon_at) + `messages` (direction
+  in|out, sender_kind buyer|bot|human|system). Live migration via
+  `_ensure_convo_tables()` (init_db DELETES the db — never run it against
+  the live spike).
+- Endpoints: `/conversations/upsert`, `/{cid}/messages` (human outbound
+  auto-clears escalation; buyer inbound reopens resolved), `GET
+  /conversations?include_last=1` (conditional aggregates → last_in_at /
+  last_human_out_at without N+1), `/{cid}/messages`, `/{cid}/escalate`
+  (arms flag + system-note + S8 event), `/{cid}/sla_beacon`,
+  `/{cid}/status`.
+
+### Glue
+
+- `_mirror()` — every webhook inbound + every bot outbound lands in spine,
+  best-effort, BEFORE routing (staff see the thread even if routing dies).
+- `escalate_to_chatwoot` split: default arms the SPINE conversation;
+  CHATWOOT_ENABLED=1 restores the legacy inbox path verbatim.
+- NEW `POST /console/threads/{cid}/reply` (bearer-gated): staff take-over
+  sends via evo DIRECTLY (no bridge identity at all), mirrors as HUMAN
+  outbound → clears escalation → stops SLA. evo failure → 502, nothing
+  mirrored (never record an unsent message).
+- `sla_tick` v2 reads spine: beacon when last_in_at > SLA_HOURS old AND no
+  human out after it AND not already beaconed. Legacy path behind the flag.
+
+### Console
+
+- ThreadsPage replaces InboxPage (route /inbox kept): two-col list/thread,
+  violet AI bubbles vs plain human vs left buyer lines, centered system
+  notes (escalation summaries are STAFF-facing), escalation badge per row,
+  Resolve button (ConfirmDialog), reply box → glue take-over. Sidebar
+  attention dot now = open conversations WITH pending escalation (was:
+  chatwoot unread count).
+
+### Drills executed LIVE
+
+- complaint webhook → transcript mirrored → COMPLAINT armed ✓
+- take-over via new endpoint → delivered to Leonard's REAL phone ✓,
+  escalation cleared ✓
+- sla_tick: 3h-old drill thread → boss nudged once ✓, second tick silent ✓
+- dashboard lag fix verified earlier this session (polls 66-137ms during
+  active LLM routing; :8090 still needs its caddy container to ship)
+
+### Gates (FULL board after all layers)
+
+calc **22/22** · e2e **13/13** · voice **PASS** · B4 **12/12** · S9 **5/5**
+· O5 auto **10/10** · console tsc/build/lint clean (2 pre-existing
+warnings). DRY_RUN gates write nothing to the store by design.
+
+### State / follow-ups
+
+Chatwoot containers still RUNNING but unused (flag off) — stop them in a
+later cleanup once v1.2 soaks. Stamp (:8090 caddy) still pending as a
+deployment step. Legacy /console/inbox/* glue endpoints retained untouched
+for rollback. dify DSL fake-promise (#34) still queued (needs re-import).

@@ -84,6 +84,9 @@ CALC_URL = cfg("CALC_URL", "http://localhost:8100").rstrip("/")
 CW_URL = cfg("CHATWOOT_URL", "http://localhost:3000").rstrip("/")
 CW_ACCOUNT = cfg("CHATWOOT_ACCOUNT_ID", "1")
 CW_TOKEN = cfg("CHATWOOT_API_TOKEN")
+# v1.2: spine is THE conversation store (S4). Chatwoot stays installed as a
+# replaceable organ but is off unless explicitly re-enabled.
+CHATWOOT_ENABLED = cfg("CHATWOOT_ENABLED", "0") == "1"
 # Take-over replies must carry a HUMAN identity: CHATWOOT_API_TOKEN often
 # belongs to the evo-bridge user (trap #28) — API messages posted with it
 # show bridge as sender and /a6/sla_tick keeps beaconing. The ADMIN user's
@@ -618,6 +621,26 @@ def _same_opening(a: str, b: str, n: int = 4) -> bool:
     return bool(wa) and wa == wb
 
 
+def _mirror(remote: str, name: str | None, direction: str,
+            sender_kind: str, body: str) -> int | None:
+    """v1.2 S4 store: every transcript line lands in spine (chatwoot
+    replacement; X1 — spine stays the only runtime store). Best-effort:
+    a spine hiccup must never break the buyer-facing path."""
+    if DRY_RUN:
+        return None
+    try:
+        cid = _post(f"{SPINE_URL}/conversations/upsert",
+                    {"wa_jid": remote, "name": name},
+                    timeout=5)["conversation_id"]
+        _post(f"{SPINE_URL}/conversations/{cid}/messages",
+              {"direction": direction, "sender_kind": sender_kind,
+               "body": body[:4000]}, timeout=5)
+        return cid
+    except Exception as e:
+        print(f"[s4] mirror skipped ({e})", flush=True)
+        return None
+
+
 def compose(situation: str, lang: str, buyer_text: str,
             facts: list[str] | None = None,
             remote: str = "",
@@ -801,12 +824,33 @@ def _find_contact(remote: str) -> list[dict]:
 def escalate_to_chatwoot(remote: str, buyer_text: str, tag: str, lang: str,
                          customer: dict, holding_reply: str,
                          note_extra: str = "") -> None:
-    """A6-1 escalation package into the chatwoot inbox: ensure contact +
-    open conversation (source_id = WhatsApp JID), drop a private note with
-    the AI summary and the draft reply staff can edit & send, label it.
+    """A6-1 escalation package. v1.2 default: arm the SPINE conversation
+    (S4 store; the console Threads page renders it). CHATWOOT_ENABLED=1
+    restores the legacy chatwoot-inbox path unchanged.
     Best-effort — the buyer-facing holding reply already went out via evo;
-    a chatwoot hiccup must never break that path."""
-    if not CW_TOKEN or DRY_RUN:
+    a store hiccup must never break that path."""
+    if DRY_RUN:
+        return
+    summary = (
+        f"{customer.get('name') or remote.split('@')[0]}"
+        f" — lang {lang}, tier {customer.get('tier') or 'new'},"
+        f" id {customer.get('customer_id')}\n"
+        f"Buyer wrote: \"{buyer_text[:400]}\"\n"
+        f"AI holding reply already sent: \"{holding_reply[:300]}\"\n"
+        + note_extra +
+        "Next: reply from the console Threads page — it goes to the buyer "
+        "over WhatsApp and clears this flag.")
+    if not (CHATWOOT_ENABLED and CW_TOKEN):
+        try:
+            cid = _post(f"{SPINE_URL}/conversations/upsert",
+                        {"wa_jid": remote,
+                         "name": customer.get("name") or None}, timeout=5
+                        )["conversation_id"]
+            _post(f"{SPINE_URL}/conversations/{cid}/escalate",
+                  {"tag": tag, "note": summary}, timeout=5)
+            print(f"[a6] spine conversation {cid} armed ({tag})", flush=True)
+        except Exception as e:
+            print(f"[a6] spine handoff skipped: {e}", flush=True)
         return
     try:
         inbox = _cw_inbox()
@@ -847,17 +891,8 @@ def escalate_to_chatwoot(remote: str, buyer_text: str, tag: str, lang: str,
         else:
             convid = conv["id"]
 
-        summary = (
-            f"[ESCALATION {tag}] {customer.get('name') or remote.split('@')[0]}"
-            f" — lang {lang}, tier {customer.get('tier') or 'new'},"
-            f" id {customer.get('customer_id')}\n"
-            f"Buyer wrote: \"{buyer_text[:400]}\"\n"
-            f"AI holding reply already sent: \"{holding_reply[:300]}\"\n"
-            + note_extra +
-            "Next: edit & send a PUBLIC reply in this thread — evo delivers "
-            "it to the buyer over WhatsApp.")
         _cw("POST", f"/conversations/{convid}/messages",
-            {"content": summary, "private": True})
+            {"content": f"[ESCALATION {tag}] {summary}", "private": True})
         labels = [tag.lower()]
         try:
             _cw("POST", f"/conversations/{convid}/labels", {"labels": labels})
@@ -1147,11 +1182,52 @@ def b6_tick(hours: float = -1):
 
 @app.post("/a6/sla_tick")
 def sla_tick(hours: float = -1):
-    """A6 SLA beacon: open chatwoot conversations with NO reply from a human
-    agent (bridge/evo mirrors don't count) older than SLA_HOURS -> nudge
-    BOSS on WhatsApp + S8 event, once per conversation."""
+    """A6 SLA beacon: open conversations where the buyer's LAST inbound has
+    sat unanswered by a human for > SLA_HOURS -> nudge BOSS on WhatsApp,
+    once per conversation (until handled or re-escalated).
+    v1.2 default reads the SPINE S4 store; CHATWOOT_ENABLED=1 restores the
+    legacy chatwoot path unchanged."""
     h = hours if hours >= 0 else float(cfg("SLA_HOURS", SLA_HOURS))
     boss = cfg("BOSS_WHATSAPP", BOSS_WHATSAPP)
+    if not CHATWOOT_ENABLED:
+        from datetime import datetime, timezone
+        convs = _get(f"{SPINE_URL}/conversations?status=open"
+                     "&include_last=1").get("items", [])
+        now = time.time()
+        fired = []
+        for c in convs:
+            last_in = c.get("last_in_at")
+            if not last_in:
+                continue  # nothing to chase yet
+            waited = (now - datetime.strptime(
+                last_in, "%Y-%m-%d %H:%M:%S").replace(
+                    tzinfo=timezone.utc).timestamp()) / 3600
+            if waited < h:
+                continue
+            if c.get("sla_beacon_at"):
+                continue  # once per conversation until handled/re-armed
+            human_out = c.get("last_human_out_at")
+            if human_out and human_out >= last_in:
+                continue  # a person already took over after the buyer wrote
+            name = c.get("contact_name") or c["wa_jid"].split("@")[0]
+            preview = (c.get("preview") or "")[:120]
+            if boss:
+                send_text(boss,
+                          f"[SLA {waited:.0f}h] Escalation unanswered — "
+                          f"{name} (thread #{c['id']}): \"{preview}\"")
+            try:
+                _post(f"{SPINE_URL}/conversations/{c['id']}/sla_beacon",
+                      {}, timeout=5)
+                _post(f"{SPINE_URL}/events",
+                      {"kind": "sla_beacon",
+                       "detail_json": json.dumps({
+                           "conversation_id": c["id"],
+                           "hours": round(waited, 1)})}, timeout=10)
+            except Exception as e:
+                print(f"[sla] store update skipped: {e}", flush=True)
+            fired.append(c["id"])
+            print(f"[sla] beacon thread {c['id']} ({waited:.1f}h)", flush=True)
+        return {"checked": len(convs), "beacons": fired, "store": "spine"}
     if not CW_TOKEN:
         return {"skipped": "no CHATWOOT_API_TOKEN"}
     humans = {a["id"] for a in _cw("GET", "/agents")
@@ -1938,6 +2014,35 @@ async def console_inbox_reply(cid: int, request: Request):
     return {"ok": True, "id": res.get("id"), "created_at": res.get("created_at")}
 
 
+# ------------------------------------------------- v1.2 threads (S4 spine) --
+
+@app.post("/console/threads/{cid}/reply")
+async def console_thread_reply(cid: int, request: Request):
+    """v1.2 take-over: free-edit staff message sent to the buyer over
+    WhatsApp via evo DIRECTLY — no chatwoot, no bridge identity. Mirrored
+    into spine as a HUMAN outbound, which clears any armed escalation and
+    marks the thread handled for /a6/sla_tick."""
+    try:
+        body = json.loads(await request.body())
+        content = str(body.get("content", "")).strip()
+    except Exception:
+        raise HTTPException(400, 'body must be JSON {"content": "..."}')
+    if not content:
+        raise HTTPException(400, "content is empty")
+    convo = await asyncio.to_thread(
+        _get, f"{SPINE_URL}/conversations/{cid}/messages")
+    jid = convo["conversation"]["wa_jid"]
+    try:
+        await asyncio.to_thread(send_text, jid, content)
+    except Exception as e:
+        # never mirror an unsent message — staff must know delivery failed
+        raise HTTPException(502, f"evo send failed: {str(e)[:200]}")
+    await asyncio.to_thread(
+        _post, f"{SPINE_URL}/conversations/{cid}/messages",
+        {"direction": "out", "sender_kind": "human", "body": content[:4000]})
+    return {"ok": True, "conversation_id": cid, "to": jid}
+
+
 # ------------------------------------------------- console voice samples ---
 # O4-2: the client's 5-10 real messages become the tone anchor. This edits
 # ONLY the Samples section of dify/prompts/voice_guide.md — config-as-code
@@ -2412,6 +2517,10 @@ async def webhook(request: Request):
         print(f"[a2] spine down, anonymous fallback: {e}", flush=True)
         customer = {"customer_id": "anonymous", "tier": "new"}
 
+    # S4 mirror: the buyer's line lands in the spine transcript BEFORE
+    # routing, so staff see the thread even if routing dies mid-flight.
+    _mirror(remote, data.get("pushName") or None, "in", "buyer", text)
+
     try:
         # route() makes blocking LLM/spine HTTP calls (classify alone can
         # take seconds; dify timeout 90s). Running it inline inside an
@@ -2426,6 +2535,7 @@ async def webhook(request: Request):
         try:
             await asyncio.to_thread(send_text, remote, reply)
             _remember(remote, reply, buyer_text=text)
+            _mirror(remote, data.get("pushName") or None, "out", "bot", reply)
         except Exception as e:
             # delivery failure must not 500 the webhook (X2: log and move on;
             # in production a dead session alerts via the health digest)

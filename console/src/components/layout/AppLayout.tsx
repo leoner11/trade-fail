@@ -18,7 +18,7 @@ import {
 import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { glueApi } from '../../api/glue'
+import { spine } from '../../api/spine'
 import { useAuth } from '../../auth/AuthContext'
 import { T } from '../../i18n/en'
 import { usePoll } from '../../lib/usePoll'
@@ -132,9 +132,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const { pathname } = useLocation()
   const { signOut } = useAuth()
   const title = T.titles[pathname as keyof typeof T.titles] ?? ''
-  // nav unread badge — light poll; the Inbox page itself polls at 5s
-  const inbox = usePoll(() => glueApi.inboxConversations(), 30_000)
-  const unread = inbox.data?.total_unread ?? 0
+  // nav attention badge — light poll; the Threads page itself polls at 5s.
+  // v1.2: pending escalations in the spine store, not chatwoot unread.
+  const threads = usePoll(() => spine.listThreads('open'), 30_000)
+  const unread = (threads.data?.items ?? []).filter((c) => c.escalation_tag).length
 
   return (
     <div className="flex h-screen overflow-hidden">

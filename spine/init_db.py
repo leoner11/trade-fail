@@ -73,6 +73,29 @@ CREATE TABLE IF NOT EXISTS social_posts (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+
+-- S4: conversations (v1.2 — replaces chatwoot as THE transcript store;
+-- glue mirrors every inbound/outbound here, console reads spine only)
+CREATE TABLE IF NOT EXISTS conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    wa_jid TEXT UNIQUE NOT NULL,    -- e.g. 6281234567890@s.whatsapp.net
+    contact_name TEXT,
+    status TEXT DEFAULT 'open',     -- open | resolved
+    escalation_tag TEXT,            -- armed tag (COMPLAINT/PRICE_GAPS/...); NULL = none pending
+    escalated_at TEXT,
+    sla_beacon_at TEXT,             -- last SLA nudge sent for this conversation
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id),
+    direction TEXT NOT NULL,        -- in | out
+    sender_kind TEXT NOT NULL,      -- buyer | bot | human | system
+    body TEXT NOT NULL,
+    ts TEXT DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 # Seed: generator-style catalog (Ducotti-flavored for the spike)

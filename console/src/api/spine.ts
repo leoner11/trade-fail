@@ -112,4 +112,40 @@ export const spine = {
     apiFetch<{ ok: boolean; sku: string }>(`/spine/catalog/${encodeURIComponent(sku)}`, { method: 'DELETE' }),
   importCatalog: (csvText: string) =>
     apiFetch<GapReport>('/spine/catalog/import', { method: 'POST', body: csvText }),
+  // ---- v1.2 threads (S4 conversation store; chatwoot replacement) ----
+  listThreads: (status = 'open') =>
+    apiFetch<ListResp<ThreadRow>>(`/spine/conversations?status=${status}&include_last=1`),
+  getThread: (cid: number) => apiFetch<ThreadDetail>(`/spine/conversations/${cid}/messages`),
+  setThreadStatus: (cid: number, status: 'open' | 'resolved') =>
+    apiFetch<{ ok?: boolean; conversation_id: number; status: string }>(
+      `/spine/conversations/${cid}/status`,
+      { method: 'POST', body: JSON.stringify({ status }) },
+    ),
+}
+
+export interface ThreadRow {
+  id: number
+  wa_jid: string
+  contact_name?: string | null
+  status: string
+  escalation_tag?: string | null
+  escalated_at?: string | null
+  sla_beacon_at?: string | null
+  updated_at: string
+  last_in_at?: string | null
+  last_human_out_at?: string | null
+  preview?: string
+}
+
+export interface ThreadMsg {
+  id: number
+  direction: 'in' | 'out'
+  sender_kind: 'buyer' | 'bot' | 'human' | 'system'
+  body: string
+  ts: string
+}
+
+export interface ThreadDetail {
+  conversation: ThreadRow
+  items: ThreadMsg[]
 }

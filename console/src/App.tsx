@@ -3,7 +3,7 @@ import { AppLayout } from './components/layout/AppLayout'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { Login } from './pages/Login'
 import { HomePage } from './pages/runtime/HomePage'
-import { InboxPage } from './pages/runtime/InboxPage'
+import { ThreadsPage } from './pages/runtime/ThreadsPage'
 import { QuotesPage } from './pages/runtime/QuotesPage'
 import { CustomersPage } from './pages/runtime/CustomersPage'
 import { SocialPage } from './pages/runtime/SocialPage'
@@ -23,7 +23,7 @@ function Shell() {
     <AppLayout>
       <Routes>
         <Route path="/" element={<HomePage />} />
-        <Route path="/inbox" element={<InboxPage />} />
+        <Route path="/inbox" element={<ThreadsPage />} />
         <Route path="/quotes" element={<QuotesPage />} />
         <Route path="/customers" element={<CustomersPage />} />
         <Route path="/social" element={<SocialPage />} />
