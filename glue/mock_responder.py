@@ -37,10 +37,12 @@ Env:  reads .env (GLM_* , EVO_API_KEY). Optional overrides:
 """
 import asyncio
 import base64
+import imaplib
 import json
 import math
 import os
 import re
+import smtplib
 import ssl
 import subprocess
 import threading
@@ -50,6 +52,10 @@ import urllib.parse
 import urllib.request
 import uuid
 from datetime import date
+from email.message import EmailMessage
+from email.parser import BytesParser
+from email.utils import parseaddr
+from email import policy
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -113,6 +119,17 @@ CW_BRIDGE_EMAIL = cfg("CHATWOOT_BRIDGE_EMAIL", "evo-bridge@mjcx.test")
 POSTIZ_URL = cfg("POSTIZ_URL", "http://localhost:13000").rstrip("/")
 POSTIZ_API_KEY = cfg("POSTIZ_API_KEY", "")
 POSTIZ_PLATFORM = cfg("POSTIZ_PLATFORM", "linkedin")  # v1: one platform per post
+# Email inquiry channel (docs/design-email-channel.md): transport only, the
+# pipeline is THE SAME route() as WhatsApp. Off unless the client opts in.
+EMAIL_ENABLED = cfg("EMAIL_ENABLED", "0") == "1"
+EMAIL_IMAP_HOST = cfg("EMAIL_IMAP_HOST", "")
+EMAIL_IMAP_PORT = int(cfg("EMAIL_IMAP_PORT", "993"))
+EMAIL_SMTP_HOST = cfg("EMAIL_SMTP_HOST", "")
+EMAIL_SMTP_PORT = int(cfg("EMAIL_SMTP_PORT", "587"))
+EMAIL_USER = cfg("EMAIL_USER", "")
+EMAIL_PASS = cfg("EMAIL_PASS", "")
+EMAIL_FOLDER = cfg("EMAIL_FOLDER", "INBOX")
+EMAIL_FROM_NAME = cfg("EMAIL_FROM_NAME", COMPANY_NAME)
 MODEL = cfg("GLM_MODEL", "glm-4-flash")
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 USE_DIFY = cfg("USE_DIFY", "") == "1"
@@ -782,6 +799,14 @@ def spec_answer(text: str) -> str | None:
 
 
 def send_text(number_jid: str, text: str) -> None:
+    if number_jid.startswith("email:"):
+        # email channel (design-email-channel.md): same reply, SMTP door.
+        ctx = getattr(_EMAIL_CTX, "msg", None) or {}
+        subj = ctx.get("subject") or "your inquiry"
+        _email_send(number_jid.split(":", 1)[1],
+                    subj if subj.lower().startswith("re:") else f"Re: {subj}",
+                    text, in_reply_to=ctx.get("msg_id", ""))
+        return
     number = number_jid.split("@")[0].replace("+", "")
     if DRY_RUN:
         print(f"[dry-run] would send to {number}: {text[:160]}", flush=True)
@@ -932,7 +957,16 @@ def escalate_to_chatwoot(remote: str, buyer_text: str, tag: str, lang: str,
 
 def send_document(number_jid: str, path: Path, caption: str) -> None:
     """B4-2: PDF into the SAME chat (evo v2.3.7 has no sendDocument —
-    sendMedia with mediatype=document is the endpoint; media=base64)."""
+    sendMedia with mediatype=document is the endpoint; media=base64).
+    email:* jids attach the PDF to an SMTP reply instead (same thread)."""
+    if number_jid.startswith("email:"):
+        ctx = getattr(_EMAIL_CTX, "msg", None) or {}
+        subj = ctx.get("subject") or "your inquiry"
+        _email_send(number_jid.split(":", 1)[1],
+                    subj if subj.lower().startswith("re:") else f"Re: {subj}",
+                    caption, attachments=[path],
+                    in_reply_to=ctx.get("msg_id", ""))
+        return
     number = number_jid.split("@")[0].replace("+", "")
     if DRY_RUN:
         print(f"[dry-run] would send document {path.name} to {number}",
@@ -944,6 +978,213 @@ def send_document(number_jid: str, path: Path, caption: str) -> None:
         "caption": caption,
         "media": base64.b64encode(path.read_bytes()).decode()},
         headers={"apikey": EVO_KEY}, timeout=180)
+
+
+# --------------------------------------------- email inquiry channel (X-v1) --
+# docs/design-email-channel.md — email is a TRANSPORT, not a pipeline. The
+# pseudo-jid "email:<addr>" makes spine S3/S4/S8 and the thread-state memory
+# work unchanged; only the doors differ (IMAP in, SMTP out).
+
+_EMAIL_CTX = threading.local()  # per-worker-thread message metadata (trap #41 discipline: route() runs in to_thread)
+
+
+def _email_send(to: str, subject: str, body: str,
+                attachments: list[Path] | None = None,
+                in_reply_to: str = "") -> None:
+    """SMTP reply door. Raises on failure — callers decide policy
+    (never mirror an unsent message). DRY_RUN prints instead."""
+    if DRY_RUN:
+        print(f"[dry-run] would email {to}: {subject} :: {body[:120]}",
+              flush=True)
+        return
+    if not (EMAIL_SMTP_HOST and EMAIL_USER):
+        raise RuntimeError("email SMTP not configured (EMAIL_SMTP_HOST/USER)")
+    msg = EmailMessage()
+    msg["From"] = f"{EMAIL_FROM_NAME} <{EMAIL_USER}>"
+    msg["To"] = to
+    msg["Subject"] = subject
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+        msg["References"] = in_reply_to
+    msg.set_content(body)
+    for p in attachments or []:
+        msg.add_attachment(p.read_bytes(), maintype="application",
+                           subtype="pdf", filename=p.name)
+    port = EMAIL_SMTP_PORT
+    if port == 465:
+        server = smtplib.SMTP_SSL(EMAIL_SMTP_HOST, port, timeout=30,
+                                  context=ssl.create_default_context())
+    else:
+        server = smtplib.SMTP(EMAIL_SMTP_HOST, port, timeout=30)
+    with server:
+        if port != 465:
+            server.starttls(context=ssl.create_default_context())
+        server.login(EMAIL_USER, EMAIL_PASS)
+        server.send_message(msg)
+
+
+def _handle_email(addr: str, name: str | None, subject: str, body: str,
+                  msg_id: str = "") -> dict:
+    """Shared post-fetch handler — the email twin of the /webhook/evo body
+    (resolve → mirror → route → send → remember → mirror). Also the seam
+    the offline gate drives (tests/test_email_channel.py stubs _email_send)."""
+    jid = f"email:{addr.lower()}"
+    text = (((subject or "").strip() + ("\n\n" if subject.strip() else "")
+             + (body or "").strip()).strip())
+    if not text:
+        return {"skipped": "no text"}
+    if msg_id and msg_id in _seen:
+        return {"deduped": msg_id}
+    if msg_id:
+        _seen.add(msg_id)
+
+    try:
+        resolved = _post(f"{SPINE_URL}/resolve", {"wa_jid": jid, "name": name})
+        customer = resolved["customer"]
+    except Exception as e:
+        print(f"[a2-email] spine down, anonymous fallback: {e}", flush=True)
+        customer = {"customer_id": "anonymous", "tier": "new"}
+
+    _mirror(jid, name, "in", "buyer", text)
+
+    _EMAIL_CTX.msg = {"to": addr, "subject": (subject or "").strip(),
+                      "msg_id": msg_id}
+    try:
+        reply = route(customer, text, jid)
+        if reply:
+            _email_send(addr,
+                        (subject or "your inquiry")
+                        if (subject or "").lower().startswith("re:")
+                        else f"Re: {(subject or 'your inquiry').strip()}",
+                        reply, in_reply_to=msg_id)
+            _remember(jid, reply, buyer_text=text)
+            _mirror(jid, name, "out", "bot", reply)
+    finally:
+        _EMAIL_CTX.msg = None
+    return {"ok": True, "replied": bool(reply), "to": jid}
+
+
+def _email_poll_sync(limit: int = 20) -> dict:
+    """One IMAP pass. Marks \\Seen ONLY after handling succeeds; Message-ID
+    dedupe keeps a crash between fetch and mark from double-replying."""
+    if not (EMAIL_ENABLED and EMAIL_IMAP_HOST and EMAIL_USER):
+        return {"skipped": "email channel not configured (EMAIL_ENABLED)"}
+    with imaplib.IMAP4_SSL(EMAIL_IMAP_HOST, EMAIL_IMAP_PORT) as imap:
+        imap.login(EMAIL_USER, EMAIL_PASS)
+        imap.select(EMAIL_FOLDER, readonly=False)
+        typ, ids = imap.uid("search", None, "UNSEEN")
+        if typ != "OK":
+            raise RuntimeError(f"imap search failed: {typ}")
+        uids = (ids[0].split() if ids and ids[0] else [])[-limit:]
+        handled = []
+        for uid in uids:
+            typ, parts = imap.uid("fetch", uid, "(BODY.PEEK[])")
+            if typ != "OK" or not parts or not isinstance(parts[0], tuple):
+                continue
+            raw = bytes(parts[0][1])
+            m = BytesParser(policy=policy.default).parsebytes(raw)
+            frm_name, frm_addr = parseaddr(str(m.get("From") or ""))
+            mid = str(m.get("Message-ID") or "").strip()
+            body = ""
+            if m.is_multipart():
+                for part in m.walk():
+                    if part.get_content_type() == "text/plain":
+                        body = part.get_content()
+                        break
+            else:
+                try:
+                    body = m.get_content()
+                except Exception:
+                    body = m.get_payload(decode=True).decode(
+                        "utf-8", "replace")
+            res = _handle_email(frm_addr, frm_name or None,
+                                str(m.get("Subject") or ""), body, mid)
+            handled.append({"uid": uid.decode(), **res})
+            if res.get("ok"):
+                imap.uid("store", uid, "+FLAGS", "(\\Seen)")
+        return {"fetched": len(uids), "handled": handled}
+
+
+@app.post("/email/poll")
+async def email_poll(limit: int = 20):
+    """n8n clock hits this every minute during office hours. Sync IMAP/SMTP
+    I/O stays OFF the event loop (trap #41)."""
+    return await asyncio.to_thread(_email_poll_sync, limit)
+
+
+# ------------------------------------------------------- X5 report delivery --
+
+def _fmt_span(seconds: float | None) -> str:
+    if seconds is None:
+        return "n/a"
+    s = int(round(seconds))
+    if s >= 3600:
+        return f"{s // 3600}h{s % 3600 // 60:02d}m"
+    if s >= 60:
+        return f"{s // 60}m{s % 60:02d}s"
+    return f"{s}s"
+
+
+def _x5_text(rep: dict, short: bool) -> str:
+    """Render the spine /reports/x5 computation as a boss-readable WhatsApp
+    text. LLM NEVER writes this — numbers come verbatim from the store
+    (house rule #1: calc/store computes, glue copies)."""
+    c = rep["conversations"]
+    q = rep["quotes"]
+    head = (f"📊 {'Weekly digest' if short else 'Monthly report'} "
+            f"(last {int(rep['days'])} days)")
+    lines = [head,
+             f"Conversations: {c['total']} — AI handled {c['ai_handled']}, "
+             f"escalated {c['escalated']}, human-only {c['human_only']}",
+             f"Median response time: {_fmt_span(rep['median_response_seconds'])}"
+             f" ({rep['responses_measured']} measured)"]
+    if not short:
+        top = ", ".join(f"{p['name']} ×{p['count']}"
+                        for p in rep["top_products"][:5])
+        if top:
+            lines.append(f"Top asked products: {top}")
+        misses = rep["kb_misses"]
+        lines.append(f"Unanswerable questions (KB misses): {len(misses)}")
+        for m in misses[:3]:
+            lines.append(f"  • \"{m['snippet'][:60]}\"")
+    reasons = ", ".join(f"{k} {v}" for k, v in
+                        sorted(rep["escalation_reasons"].items(),
+                               key=lambda kv: -kv[1]))
+    if reasons:
+        lines.append(f"Why handed off: {reasons}")
+    if not short:
+        tc = rep["tier_changes"]
+        lines.append(f"Tier changes: {len(tc)}")
+    lines.append(f"Quotes sent {q['sent']} · win rate "
+                 f"{q['win_rate_pct'] if q['win_rate_pct'] is not None else '—'}%"
+                 f" · value {q['value_sent']:,.0f}")
+    lines.append(f"SLA beacons {rep['sla_beacons']} · social posted/scheduled "
+                 f"{rep['social']['posted_or_scheduled']}")
+    return "\n".join(lines)
+
+
+@app.post("/x5/send")
+async def x5_send(days: float = 30, short: bool = False):
+    """Auto-send the X5 report to BOSS on schedule (n8n monthly/weekly).
+    Text-only for now; PDF export is a later custom generator."""
+    import urllib.request as _u
+    req = _u.Request(f"{SPINE_URL}/reports/x5?days={days}")
+    with _u.urlopen(req, timeout=20) as r:
+        rep = json.loads(r.read())
+    boss = cfg("BOSS_WHATSAPP", BOSS_WHATSAPP)
+    if not boss:
+        return {"skipped": "no BOSS_WHATSAPP configured"}
+    text = _x5_text(rep, short)
+    await asyncio.to_thread(send_text, f"{boss.lstrip('+')}@s.whatsapp.net",
+                            text)
+    try:
+        await asyncio.to_thread(
+            _post, f"{SPINE_URL}/events",
+            {"kind": "x5_sent",
+             "detail_json": json.dumps({"days": days, "short": short})})
+    except Exception as e:
+        print(f"[x5] S8 log skipped ({e})", flush=True)
+    return {"ok": True, "to": boss, "preview": text}
 
 
 def _carbone_docx(data: dict) -> bytes:
@@ -1293,10 +1534,21 @@ paragraphs. End with a soft call-to-action inviting inquiries via WhatsApp.
 Return STRICT JSON: {{"caption": "...", "hashtags": "#tag1 #tag2"}}"""
 
 
-def _postiz_organizations() -> list:
+POSTIZ_API_BASE = f"{POSTIZ_URL}/api/public/v1"  # trap #44: nginx strips /api/
+
+
+def _postiz_auth(key: str) -> dict:
+    """v2.11.2 middleware reads the RAW key from Authorization; newer versions
+    use X-API-KEY — send both."""
+    return {"Authorization": key, "X-API-KEY": key}
+
+
+def _postiz_integrations() -> list:
+    """v2.11.2 public API has no /organizations; /integrations lists the
+    connected channels (org itself is derived from the key server-side)."""
     req = urllib.request.Request(
-        f"{POSTIZ_URL}/public/v1/organizations",
-        headers={"X-API-KEY": POSTIZ_API_KEY or ""})
+        f"{POSTIZ_API_BASE}/integrations",
+        headers=_postiz_auth(POSTIZ_API_KEY or ""))
     with urllib.request.urlopen(req, timeout=20, context=_CTX) as r:
         return json.loads(r.read())
 
@@ -1307,18 +1559,16 @@ def _push_to_postiz(caption: str, hashtags: str, when: str) -> tuple[bool, str]:
     if not POSTIZ_API_KEY:
         return False, "POSTIZ_API_KEY not configured"
     try:
-        orgs = _postiz_organizations()
-        if not orgs:
-            return False, "no postiz organization/workspace yet"
-        org = orgs[0]
+        integrations = _postiz_integrations()
+        if not integrations:
+            return False, "no connected channel in postiz yet"
         body = json.dumps({
-            "organizationUid": org["id"] if isinstance(org, dict) else org,
             "date": when,
             "settings": {POSTIZ_PLATFORM: [{"content": f"{caption}\n\n{hashtags}"}]},
         }).encode()
         req = urllib.request.Request(
-            f"{POSTIZ_URL}/public/v1/posts", data=body, method="POST",
-            headers={"X-API-KEY": POSTIZ_API_KEY,
+            f"{POSTIZ_API_BASE}/posts", data=body, method="POST",
+            headers={**_postiz_auth(POSTIZ_API_KEY),
                      "Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=30, context=_CTX) as r:
             res = json.loads(r.read())
@@ -2052,7 +2302,7 @@ async def console_thread_reply(cid: int, request: Request):
         await asyncio.to_thread(send_text, jid, content)
     except Exception as e:
         # never mirror an unsent message — staff must know delivery failed
-        raise HTTPException(502, f"evo send failed: {str(e)[:200]}")
+        raise HTTPException(502, f"send failed ({'email' if jid.startswith('email:') else 'evo'}): {str(e)[:200]}")
     await asyncio.to_thread(
         _post, f"{SPINE_URL}/conversations/{cid}/messages",
         {"direction": "out", "sender_kind": "human", "body": content[:4000]})

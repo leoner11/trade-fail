@@ -1,0 +1,55 @@
+{
+ "name": "Email poll (1min)",
+ "nodes": [
+  {
+   "parameters": {
+    "rule": {
+     "interval": [
+      {
+       "field": "minutes",
+       "minutesInterval": 1
+      }
+     ]
+    }
+   },
+   "id": "email-trigger",
+   "name": "every 1min",
+   "type": "n8n-nodes-base.scheduleTrigger",
+   "typeVersion": 1.2,
+   "position": [0, 0]
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "http://host.docker.internal:8102/email/poll",
+    "options": {
+     "timeout": 300000
+    }
+   },
+   "id": "email-call",
+   "name": "glue /email/poll",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [220, 0]
+  }
+ ],
+ "connections": {
+  "every 1min": {
+   "main": [
+    [
+     {
+      "node": "glue /email/poll",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1",
+  "timezone": "Asia/Jakarta"
+ },
+ "active": false,
+ "id": "email-poll-001"
+}
