@@ -2109,3 +2109,34 @@ invisible from our side until isolated:
 State: consent URL now carries only authorized scopes + matching redirect;
 Leonard clicking Connect. Console callback page completes the handshake via
 glue `/console/social/finish/linkedin`.
+
+### Session #14 cont. 4 — LIVE-FIRE: LinkedIn channel connected, S9 green
+
+Leonard's app "test" approved; channel `cmta2t4po…` (linkedin, member
+posting) connected via the console flow (consent → our callback → glue
+finish). Debug ladder to get there, each layer verified from compiled code
+or wire evidence:
+1. client_id=undefined → creds passthrough + --env-file .env on EVERY
+   compose postiz command (plain -f up does NOT read ../.env).
+2. redirect_uri mismatch → self-inflicted port flip race; rule: diff the
+   error page's own URL vs the portal BEFORE touching either side.
+3. unauthorized_scope_error w_organization_social → scopes patch file
+   (member-only) until Community Management product lands.
+4. popup 401 → /console/social/finish/* exempted from bearer (state is the
+   guard; popup shares no localStorage).
+5. connect 500 = LocalStorage.uploadSimple 403 on the avatar CDN → patch #2:
+   avatar failures degrade to empty picture, never abort the connect.
+6. push 400 "image must be an array" → value[] entries ALWAYS carry image:[],
+   even when empty. Response key is postId (parser updated); DELETE wants
+   body.id despite the :id path param.
+
+LIVE-FIRE (Leonard-approved): fresh draft P-A6B672 attempt skipped (pre-fix
+payload), direct probe created+deleted ✓, formal gate rerun — S9
+**--expect-scheduled 4/4**: draft → webhook APPROVE → scheduled in postiz
+with pointer. Scheduled test entry deleted immediately (200) — nothing can
+publish. Gate board: e2e 13 · B4 12 · email 12 · voice PASS (1-run flake on
+wording variation, green on rerun) · S9 expect-mode 4/4.
+
+Multi-image + PDF confirmed supported by the v2.11.2 linkedin provider
+(processMediaForPosts maps all media; isPdf routes to LinkedIn documents
+endpoint; images-to-PDF carousel exists as a setting).

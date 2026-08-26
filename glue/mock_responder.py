@@ -1580,9 +1580,9 @@ def _push_to_postiz(caption: str, hashtags: str, when: str,
             d = (datetime.datetime.now() + datetime.timedelta(days=1)) \
                 .replace(hour=9, minute=0, second=0, microsecond=0)
             when = d.isoformat(timespec="seconds")
-        entry = {"content": f"{caption}\n\n{hashtags}"}
-        if image:
-            entry["image"] = image
+        # v2.11.2 provider settings validate image ALWAYS as an array,
+        # even when empty
+        entry = {"content": f"{caption}\n\n{hashtags}", "image": image or []}
         body = json.dumps({
             "type": "schedule",
             "shortLink": False,
@@ -1599,9 +1599,10 @@ def _push_to_postiz(caption: str, hashtags: str, when: str,
             res = json.loads(r.read())
         pid = ""
         if isinstance(res, list) and res:
-            pid = str(res[0].get("id") or res[0].get("postID") or "")
+            pid = str(res[0].get("postId") or res[0].get("id")
+                      or res[0].get("postID") or "")
         elif isinstance(res, dict):
-            pid = str(res.get("id") or "")
+            pid = str(res.get("postId") or res.get("id") or "")
         return True, pid or "submitted"
     except Exception as e:
         return False, str(e)[:160]
