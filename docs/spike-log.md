@@ -2140,3 +2140,40 @@ wording variation, green on rerun) · S9 expect-mode 4/4.
 Multi-image + PDF confirmed supported by the v2.11.2 linkedin provider
 (processMediaForPosts maps all media; isPdf routes to LinkedIn documents
 endpoint; images-to-PDF carousel exists as a setting).
+
+### Session #14 cont. 5 — SOCIAL v1.5: draft editor + pictures + guidance
+
+Leonard greenlit. Built across spine/glue/console:
+
+Spine: `social_posts.images_json` live migration (PRAGMA-guarded ALTER);
+`PATCH /posts/{pid}` (caption/hashtags/scheduled_at — PENDING only, 409
+otherwise); `POST/DELETE /posts/{pid}/images[/{idx}]` (path registry;
+file lifecycle owned by glue).
+
+Glue:
+- `POST /console/social/draft/{pid}/image` — raw bytes + X-Filename
+  (KB-ingest pattern), ext whitelist png/jpg/jpeg/webp, ≤8 MB, stored under
+  `spine/social_images/<pid>-<n>.<ext>`, path appended on the S6 row.
+- `GET /console/social/draft/{pid}/image/{idx}` — preview for <img>.
+- `DELETE …/{idx}` — removes file + registry entry.
+- `_postiz_upload_media()` — hand-rolled multipart to public API /upload →
+  MediaDto {id, path}.
+- `_approve_post`: uploads every attached image BEFORE pushing; any avatar/
+  media failure degrades text-only (never blocks approval).
+- `POST /console/social/regenerate` {post_id, hint} — same _CAPT_PROMPT +
+  facts rebuild from S1 + hint as steering line + digits guard (invented
+  numbers refused). Standing per-client angle via SOCIAL_ANGLE .env key,
+  injected into every generated caption.
+
+Console: SocialPage pending rows are clickable → DraftEditor panel
+(caption textarea, hashtags, schedule datetime, picture thumbs w/ add ×,
+hint+Regenerate, Save). Approval stays WhatsApp-only by design.
+
+LIVE-FIRE with a real attached PNG (P-D20EC4): attach ✓ regenerate honoring
+"lead with fast lead times and factory-direct pricing" ✓ edit hashtags +
+schedule +30d ✓ APPROVE via webhook → **scheduled in postiz incl. uploaded
+picture** (postiz_id cmta50m2o…) → deleted immediately (200). Nothing
+published.
+
+Gates after edits: e2e **13/13** · B4 **12/12** · email **12/12** · voice
+**PASS** · console build/lint clean (2 pre-existing warnings).

@@ -1533,10 +1533,13 @@ def sla_tick(hours: float = -1):
 _CAPT_PROMPT = """You draft ONE {platform} post for a foreign-trade company.
 Product facts (the ONLY claims allowed):
 - {facts}
-
+{angle}
 Voice: professional, concrete, no hype, no emoji walls (at most one), short
 paragraphs. End with a soft call-to-action inviting inquiries via WhatsApp.
 Return STRICT JSON: {{"caption": "...", "hashtags": "#tag1 #tag2"}}"""
+
+SOCIAL_IMAGES = ROOT / "spine" / "social_images"
+_SOCIAL_IMG_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 POSTIZ_API_BASE = f"{POSTIZ_URL}/api/public/v1"  # trap #44: nginx strips /api/
@@ -1755,6 +1758,155 @@ async def console_social_channel_delete(id: str):
     return {"ok": True, "res": res}
 
 
+# --------------------------- social v1.5: draft editor (edit/pics/regen) ----
+
+def _postiz_upload_media(path: Path) -> dict:
+    """multipart POST one image to postiz; returns MediaDto {id, path}."""
+    boundary = uuid.uuid4().hex
+    head = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; "
+            f"filename=\"{path.name}\"\r\n"
+            f"Content-Type: application/octet-stream\r\n\r\n").encode()
+    body = head + path.read_bytes() + f"\r\n--{boundary}--\r\n".encode()
+    req = urllib.request.Request(
+        f"{POSTIZ_API_BASE}/upload", data=body, method="POST",
+        headers={**_postiz_auth(POSTIZ_API_KEY),
+                 "Content-Type": f"multipart/form-data; boundary={boundary}"})
+    with urllib.request.urlopen(req, timeout=60, context=_CTX) as r:
+        res = json.loads(r.read())
+    if not (isinstance(res, dict) and res.get("id") and res.get("path")):
+        raise RuntimeError(f"unexpected upload response: {str(res)[:120]}")
+    return {"id": res["id"], "path": res["path"]}
+
+
+async def _draft_row(pid: str) -> dict | None:
+    rows = await asyncio.to_thread(_get, f"{SPINE_URL}/posts?limit=500")
+    return next((p for p in rows.get("items", []) if p["post_id"] == pid),
+                None)
+
+
+@app.post("/console/social/draft/{pid}/image")
+async def console_social_draft_image(pid: str, request: Request):
+    """Attach a picture to a PENDING draft. Bytes come raw in the body with
+    the filename in X-Filename (same pattern as KB ingest). Stored under
+    spine/social_images/, path recorded on the S6 row."""
+    fname = request.headers.get("x-filename", "image.png")
+    ext = ("." + fname.rsplit(".", 1)[-1].lower()) if "." in fname else ".png"
+    if ext not in _SOCIAL_IMG_EXT:
+        raise HTTPException(400, f"unsupported type {ext} "
+                                 f"(allowed: {sorted(_SOCIAL_IMG_EXT)})")
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "empty body")
+    if len(data) > 8 * 1024 * 1024:
+        raise HTTPException(413, "image over 8 MB")
+    target = await _draft_row(pid)
+    if not target:
+        raise HTTPException(404, f"unknown post {pid}")
+    n = len(json.loads(target.get("images_json") or "[]"))
+    SOCIAL_IMAGES.mkdir(parents=True, exist_ok=True)
+    dest = SOCIAL_IMAGES / f"{pid}-{n}{ext}"
+    await asyncio.to_thread(dest.write_bytes, data)
+    try:
+        await asyncio.to_thread(
+            _post, f"{SPINE_URL}/posts/{pid}/images",
+            {"path": str(dest)}, timeout=10)
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(502, f"spine refused image ({e})")
+    return {"ok": True, "path": str(dest), "index": n}
+
+
+_IMG_CT = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+           ".webp": "image/webp"}
+
+
+@app.get("/console/social/draft/{pid}/image/{idx}")
+async def console_social_draft_image_get(pid: str, idx: int):
+    """Serve an attached image back for <img> preview (bearer-gated)."""
+    target = await _draft_row(pid)
+    imgs = json.loads((target or {}).get("images_json") or "[]")
+    if not (0 <= idx < len(imgs)):
+        raise HTTPException(404, "no such image")
+    path = Path(imgs[idx])
+    if not path.exists():
+        raise HTTPException(404, "image file missing")
+    ct = _IMG_CT.get(path.suffix.lower(), "application/octet-stream")
+    from fastapi.responses import Response
+    return Response(content=path.read_bytes(), media_type=ct)
+
+
+@app.delete("/console/social/draft/{pid}/image/{idx}")
+async def console_social_draft_image_del(pid: str, idx: int):
+    target = await _draft_row(pid)
+    imgs = json.loads((target or {}).get("images_json") or "[]")
+    if not (0 <= idx < len(imgs)):
+        raise HTTPException(404, "no such image")
+    removed = Path(imgs[idx])
+    def _spine_delete():
+        req = urllib.request.Request(
+            f"{SPINE_URL}/posts/{pid}/images/{idx}", method="DELETE")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read() or b"{}")
+    res = await asyncio.to_thread(_spine_delete)
+    removed.unlink(missing_ok=True)
+    return {"ok": True, "images": res.get("images", [])}
+
+
+@app.post("/console/social/regenerate")
+async def console_social_regenerate(request: Request):
+    """Regenerate a PENDING draft's caption, optionally steered by a hint
+    line ('lead with fast delivery'). Facts stay catalog-only; digits guard
+    still applies."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "body must be JSON")
+    pid = str(body.get("post_id") or "")
+    hint = str(body.get("hint") or "").strip()
+    target = await _draft_row(pid)
+    if not target:
+        raise HTTPException(404, f"unknown post {pid}")
+    if target["status"] != "pending":
+        raise HTTPException(409, f"post is {target['status']}, not pending")
+    specs = await asyncio.to_thread(_get,
+                                    f"{SPINE_URL}/catalog/{target['sku']}")
+    item = {"sku": target["sku"], "name": specs.get("name", target["sku"])}
+    facts = [f"{item['name']} ({item['sku']})"] + [
+        f"{k}: {v}" for k, v in (specs.get("specs") or {}).items()]
+    if specs.get("moq"):
+        facts.append(f"MOQ {specs['moq']}")
+    if specs.get("certs"):
+        facts.append(f"certifications: {specs['certs']}")
+    guidance = ""
+    if hint:
+        guidance = f"\nClient steering for THIS rewrite (advice only, never invent facts): {hint}"
+    angle = cfg("SOCIAL_ANGLE", "")
+    prompt = (_CAPT_PROMPT.format(platform=target["platform"],
+                                  facts="\n- ".join(facts),
+                                  angle=(f"Standing angle from the client "
+                                         f"(weave it in, never invent "
+                                         f"facts): {angle}" if angle else ""))
+              + guidance)
+    raw = await asyncio.to_thread(glm, prompt, "Write the JSON now.")
+    caption, hashtags = str(raw.get("caption", "")).strip(), \
+        str(raw.get("hashtags", "")).strip()
+    if not caption:
+        raise HTTPException(502, "empty regeneration — try again")
+    if _nums(caption) - _nums("\n".join(facts)):
+        raise HTTPException(502, "regeneration invented numbers; refused")
+    def _save():
+        req = urllib.request.Request(
+            f"{SPINE_URL}/posts/{pid}",
+            data=json.dumps({"caption": caption, "hashtags": hashtags}).encode(),
+            headers={"Content-Type": "application/json"}, method="PATCH")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read() or b"{}")
+    out = await asyncio.to_thread(_save)
+    return {"ok": True, "caption": caption, "hashtags": hashtags,
+            "post": out.get("post")}
+
+
+
 @app.post("/c/draft_tick")
 def c_draft_tick(count: int = 3):
     """C1+C2: pick catalog products without live posts, draft one
@@ -1777,9 +1929,13 @@ def c_draft_tick(count: int = 3):
         if specs.get("certs"):
             facts.append(f"certifications: {specs['certs']}")
         try:
-            raw = glm(_CAPT_PROMPT.format(platform=POSTIZ_PLATFORM,
-                                          facts="\n- ".join(facts)),
-                      "Write the JSON now.")
+            raw = glm(_CAPT_PROMPT.format(
+                platform=POSTIZ_PLATFORM,
+                facts="\n- ".join(facts),
+                angle=(f"Standing angle from the client (weave it in, never "
+                       f"invent facts): {cfg('SOCIAL_ANGLE', '')}"
+                       if cfg("SOCIAL_ANGLE", "") else "")),
+                "Write the JSON now.")
             caption, hashtags = str(raw.get("caption", "")).strip(), \
                 str(raw.get("hashtags", "")).strip()
         except Exception as e:
@@ -1813,9 +1969,18 @@ def _approve_post(pid: str) -> str:
     row = next((p for p in posts if p["post_id"] == pid), None)
     if not row:
         return f"No pending post {pid}."
+    # attached pictures (v1.5 editor) → postiz media, in order
+    image_media: list[dict] = []
+    for img_path in json.loads(row.get("images_json") or "[]"):
+        try:
+            image_media.append(_postiz_upload_media(Path(img_path)))
+        except Exception as e:
+            print(f"[c] {pid}: image upload failed ({e}); "
+                  "pushing text-only", flush=True)
     _post(f"{SPINE_URL}/posts/{pid}/status", {"status": "approved"}, timeout=10)
     ok, detail = _push_to_postiz(row["caption"], row["hashtags"],
-                                 row.get("scheduled_at") or "")
+                                 row.get("scheduled_at") or "",
+                                 image=image_media or None)
     if ok and detail and detail != "submitted":
         _post(f"{SPINE_URL}/posts/{pid}/publish",
               {"postiz_id": detail,

@@ -41,6 +41,184 @@ const COLUMNS: Column<PostRow>[] = [
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
+function DraftEditor({
+  post,
+  onClose,
+  onSaved,
+}: {
+  post: PostRow
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [caption, setCaption] = useState(post.caption)
+  const [hashtags, setHashtags] = useState(post.hashtags)
+  const [schedule, setSchedule] = useState(post.scheduled_at ?? '')
+  const [images, setImages] = useState<string[]>(
+    JSON.parse((post as unknown as { images_json?: string }).images_json ?? '[]'),
+  )
+  const [imgTs, setImgTs] = useState(() => Date.now())
+  const [hint, setHint] = useState('')
+  const [busy, setBusy] = useState('')
+  const [msg, setMsg] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const run = async (label: string, fn: () => Promise<void>) => {
+    setBusy(label); setMsg(null)
+    try {
+      await fn()
+    } catch (e) {
+      setMsg({ tone: 'err', text: errText(e) })
+    } finally {
+      setBusy('')
+    }
+  }
+
+  return (
+    <SectionPanel title={`Draft editor · ${post.post_id} (${post.sku})`} bodyClassName="p-4 space-y-3">
+      <div>
+        <label className="text-caption text-text-secondary">Caption</label>
+        <textarea
+          value={caption}
+          onChange={(e) => setCaption(e.target.value)}
+          rows={6}
+          className="mt-1 w-full rounded-md border border-line bg-surface-card p-2.5 text-body text-text-primary"
+        />
+      </div>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div>
+          <label className="text-caption text-text-secondary">Hashtags</label>
+          <input
+            value={hashtags}
+            onChange={(e) => setHashtags(e.target.value)}
+            className="mt-1 w-full rounded-md border border-line bg-surface-card p-2.5 text-body text-text-primary"
+          />
+        </div>
+        <div>
+          <label className="text-caption text-text-secondary">Schedule (optional)</label>
+          <input
+            type="datetime-local"
+            value={(schedule || '').slice(0, 16)}
+            onChange={(e) => setSchedule(e.target.value ? new Date(e.target.value).toISOString() : '')}
+            className="mt-1 w-full rounded-md border border-line bg-surface-card p-2.5 text-body text-text-primary"
+          />
+        </div>
+      </div>
+
+      <div>
+        <label className="text-caption text-text-secondary">Pictures</label>
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          {images.map((_, i) => (
+            <div key={i} className="relative">
+              <img
+                src={glueApi.draftImageUrl(post.post_id, i, imgTs)}
+                alt=""
+                className="h-16 w-16 rounded-md border border-line object-cover"
+              />
+              <button
+                disabled={busy !== ''}
+                onClick={() =>
+                  run('imgdel', async () => {
+                    await glueApi.socialRemoveImage(post.post_id, i)
+                    setImages((cur) => cur.filter((_, j) => j !== i))
+                    setImgTs(Date.now())
+                  })
+                }
+                className="absolute -right-1.5 -top-1.5 h-5 w-5 rounded-full border border-line bg-surface-card text-caption text-[#B91C1C]"
+                aria-label="remove picture"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <button
+            disabled={busy !== ''}
+            onClick={() => fileRef.current?.click()}
+            className="h-16 w-16 rounded-md border border-dashed border-line text-caption text-text-muted hover:bg-surface-subtle"
+          >
+            {busy === 'img' ? '…' : '+ add'}
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".png,.jpg,.jpeg,.webp"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              if (!f) return
+              run('img', async () => {
+                await glueApi.socialAttachImage(post.post_id, f)
+                setImages((cur) => [...cur, f.name])
+                setImgTs(Date.now())
+              })
+              e.target.value = ''
+            }}
+          />
+        </div>
+        <p className="mt-1 text-caption text-text-muted">PNG/JPG/WebP · first picture leads the post.</p>
+      </div>
+
+      <div>
+        <label className="text-caption text-text-secondary">Regenerate with guidance (optional)</label>
+        <div className="mt-1 flex gap-2">
+          <input
+            value={hint}
+            onChange={(e) => setHint(e.target.value)}
+            placeholder="e.g. lead with fast lead times"
+            className="w-full rounded-md border border-line bg-surface-card p-2.5 text-body text-text-primary"
+          />
+          <button
+            disabled={busy !== ''}
+            onClick={() =>
+              run('regen', async () => {
+                const res = await glueApi.socialRegenerate(post.post_id, hint)
+                setCaption(res.caption)
+                setHashtags(res.hashtags)
+                setHint('')
+              })
+            }
+            className="whitespace-nowrap rounded-md border border-brand px-3 py-1.5 text-caption font-medium text-brand hover:bg-brand-wash disabled:opacity-50"
+          >
+            {busy === 'regen' ? 'writing…' : 'Regenerate'}
+          </button>
+        </div>
+      </div>
+
+      {msg && (
+        <p className={`text-caption ${msg.tone === 'ok' ? 'text-[#15803D]' : 'text-[#B91C1C]'}`}>{msg.text}</p>
+      )}
+
+      <div className="flex gap-2">
+        <button
+          disabled={busy !== ''}
+          onClick={() =>
+            run('save', async () => {
+              await spine.editPost(post.post_id, {
+                caption,
+                hashtags,
+                scheduled_at: schedule || undefined,
+              })
+              setMsg({ tone: 'ok', text: 'Saved — approve via WhatsApp (APPROVE ' + post.post_id + ')' })
+              onSaved()
+            })
+          }
+          className="rounded-md bg-brand px-3 py-1.5 text-caption font-medium text-white hover:opacity-90 disabled:opacity-50"
+        >
+          {busy === 'save' ? 'Saving…' : 'Save draft'}
+        </button>
+        <button
+          onClick={onClose}
+          className="rounded-md border border-line px-3 py-1.5 text-caption text-text-secondary hover:bg-surface-subtle"
+        >
+          Close
+        </button>
+      </div>
+      <p className="text-caption text-text-muted">
+        Approval stays on WhatsApp by design — APPROVE / REJECT {post.post_id}. Nothing schedules without it.
+      </p>
+    </SectionPanel>
+  )
+}
+
 function ChannelsPanel() {
   const channels = useAsync(() => glueApi.socialChannels(), [])
   const platforms = useAsync(() => glueApi.socialPlatforms(), [])
@@ -153,6 +331,8 @@ export function SocialPage() {
   const posts = useAsync(() => spine.listPosts(), [])
   const rows = posts.data?.items ?? []
   const pending = rows.filter((r) => r.status === 'pending').length
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const editing = rows.find((r) => r.post_id === editingId && r.status === 'pending') ?? null
 
   if (posts.loading) {
     return (
@@ -176,13 +356,21 @@ export function SocialPage() {
         <GateBanner
           tone="attention"
           title={`${pending} draft${pending === 1 ? '' : 's'} waiting for the boss`}
-          meta="WhatsApp is the approval channel — APPROVE P-XXXXXX / REJECT P-XXXXXX. This queue is read-only by design."
+          meta="Click a pending draft to edit it here; approval stays on WhatsApp — APPROVE P-XXXXXX / REJECT P-XXXXXX."
+        />
+      )}
+      {editing && (
+        <DraftEditor
+          post={editing}
+          onClose={() => setEditingId(null)}
+          onSaved={() => posts.retry()}
         />
       )}
       <DataTable
         columns={COLUMNS}
         rows={rows}
         rowKey={(r) => r.post_id}
+        onRowClick={(r) => setEditingId(r.status === 'pending' ? r.post_id : null)}
         emptyMessage="No social drafts yet — the Monday cron fills this."
       />
       <p className="text-caption text-text-muted">

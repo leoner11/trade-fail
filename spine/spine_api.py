@@ -346,6 +346,90 @@ def save_post(inp: PostIn):
     return {"post_id": pid, "status": "pending"}
 
 
+def _ensure_post_images_column():
+    """Session #14 live migration: attached images for social drafts
+    (v1.5 editor). Idempotent."""
+    with con() as c:
+        cols = {r["name"] for r in c.execute(
+            "PRAGMA table_info(social_posts)").fetchall()}
+        if "images_json" not in cols:
+            c.execute("ALTER TABLE social_posts ADD COLUMN images_json "
+                      "TEXT NOT NULL DEFAULT '[]'")
+
+
+_ensure_post_images_column()
+
+
+class PostEditIn(BaseModel):
+    caption: str | None = None
+    hashtags: str | None = None
+    scheduled_at: str | None = None
+
+
+@app.patch("/posts/{pid}")
+def edit_post(pid: str, inp: PostEditIn):
+    """Draft editor (v1.5): caption/hashtags/schedule editable while the
+    post is still PENDING — after approval it belongs to postiz."""
+    fields = {k: v for k, v in inp.model_dump().items() if v is not None}
+    if not fields:
+        raise HTTPException(400, "nothing to edit")
+    with con() as c:
+        row = c.execute("SELECT status FROM social_posts WHERE post_id=?",
+                        (pid,)).fetchone()
+        if not row:
+            raise HTTPException(404, f"unknown post {pid}")
+        if row["status"] != "pending":
+            raise HTTPException(409, f"post is {row['status']}, not pending "
+                                     "— only pending drafts are editable")
+        sets = ", ".join(f"{k}=?" for k in fields)
+        c.execute(f"UPDATE social_posts SET {sets}, "
+                  "updated_at=CURRENT_TIMESTAMP WHERE post_id=?",
+                  (*fields.values(), pid))
+        out = dict(c.execute("SELECT * FROM social_posts WHERE post_id=?",
+                             (pid,)).fetchone())
+    return {"ok": True, "post": out}
+
+
+class PostImageIn(BaseModel):
+    path: str
+
+
+@app.post("/posts/{pid}/images")
+def append_post_image(pid: str, inp: PostImageIn):
+    """Glue stores the file; spine records its path on the draft (order =
+    display order). Pending only."""
+    with con() as c:
+        row = c.execute("SELECT status, images_json FROM social_posts "
+                        "WHERE post_id=?", (pid,)).fetchone()
+        if not row:
+            raise HTTPException(404, f"unknown post {pid}")
+        if row["status"] != "pending":
+            raise HTTPException(409, "only pending drafts take images")
+        imgs = json.loads(row["images_json"] or "[]")
+        imgs.append(inp.path)
+        c.execute("UPDATE social_posts SET images_json=?, "
+                  "updated_at=CURRENT_TIMESTAMP WHERE post_id=?",
+                  (json.dumps(imgs), pid))
+    return {"ok": True, "images": imgs}
+
+
+@app.delete("/posts/{pid}/images/{idx}")
+def remove_post_image(pid: str, idx: int):
+    with con() as c:
+        row = c.execute("SELECT images_json FROM social_posts WHERE post_id=?",
+                        (pid,)).fetchone()
+        if not row:
+            raise HTTPException(404, f"unknown post {pid}")
+        imgs = json.loads(row["images_json"] or "[]")
+        if not (0 <= idx < len(imgs)):
+            raise HTTPException(404, "image index out of range")
+        removed = imgs.pop(idx)
+        c.execute("UPDATE social_posts SET images_json=?, "
+                  "updated_at=CURRENT_TIMESTAMP WHERE post_id=?",
+                  (json.dumps(imgs), pid))
+    return {"ok": True, "removed": removed, "images": imgs}
+
+
 @app.get("/posts")
 def list_posts(status: str = "", limit: int = 50):
     sql = "SELECT * FROM social_posts WHERE 1=1"

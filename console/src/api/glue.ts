@@ -88,6 +88,28 @@ export const glueApi = {
     apiFetch<{ ok: boolean }>(`/glue/console/social/channels?id=${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
+  // draft editor (v1.5)
+  socialAttachImage: async (pid: string, file: File): Promise<{ ok: boolean; index: number }> => {
+    const res = await fetch(`/glue/console/social/draft/${encodeURIComponent(pid)}/image`, {
+      method: 'POST',
+      headers: { 'X-Filename': file.name, Authorization: `Bearer ${getToken()}` },
+      body: file,
+    })
+    if (!res.ok) throw new ApiError(res.status, await res.text())
+    return res.json()
+  },
+  socialRemoveImage: (pid: string, idx: number) =>
+    apiFetch<{ ok: boolean; images: string[] }>(
+      `/glue/console/social/draft/${encodeURIComponent(pid)}/image/${idx}`,
+      { method: 'DELETE' },
+    ),
+  draftImageUrl: (pid: string, idx: number, ts: number) =>
+    `/glue/console/social/draft/${encodeURIComponent(pid)}/image/${idx}?v=${ts}`,
+  socialRegenerate: (pid: string, hint: string) =>
+    apiFetch<{ ok: boolean; caption: string; hashtags: string }>(
+      '/glue/console/social/regenerate',
+      { method: 'POST', body: JSON.stringify({ post_id: pid, hint }) },
+    ),
 
   waStatus: () => apiFetch<WaStatus>('/glue/console/wa/status'),
   waQr: () => apiFetch<WaQr>('/glue/console/wa/qr'),

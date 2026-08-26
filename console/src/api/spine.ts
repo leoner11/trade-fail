@@ -118,6 +118,14 @@ export const spine = {
   listEvents: (kind = '', limit = 50) =>
     apiFetch<ListResp<EventRow>>(`/spine/events?limit=${limit}${kind ? `&kind=${kind}` : ''}`),
   reportX5: (days: number) => apiFetch<X5Report>(`/spine/reports/x5?days=${days}`),
+  editPost: (
+    pid: string,
+    patch: { caption?: string; hashtags?: string; scheduled_at?: string },
+  ) =>
+    apiFetch<{ ok: boolean; post: PostRow }>(`/spine/posts/${encodeURIComponent(pid)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
   listCustomers: () => apiFetch<ListResp<CustomerRow>>('/spine/customers'),
   getCustomer: (cid: string) => apiFetch<CustomerRow>(`/spine/customers/${cid}`),
   updateCustomer: (cid: string, patch: Partial<Pick<CustomerRow, 'tier' | 'name' | 'country' | 'language' | 'email'>>) =>
