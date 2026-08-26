@@ -62,6 +62,9 @@ export function PricingPage() {
   const fileInput = useRef<HTMLInputElement>(null)
   const [file, setFile] = useState<File | null>(null)
   const [editing, setEditing] = useState(false)
+  const [autonomy, setAutonomy] = useState<'assistant' | 'standard' | 'closer' | null>(null)
+  const [savingAutonomy, setSavingAutonomy] = useState(false)
+  const [autonomyNote, setAutonomyNote] = useState('')
 
   if (rules.loading) return <p className="text-body text-text-muted">Loading rules…</p>
   if (rules.error || !rules.data) {
@@ -69,6 +72,34 @@ export function PricingPage() {
   }
 
   const { rules: r } = rules.data
+  const policyAutonomy = (
+    (r as unknown as Record<string, unknown>).agent_policy as
+      | { autonomy?: string }
+      | undefined
+  )?.autonomy
+  const currentAutonomy =
+    autonomy ??
+    (policyAutonomy === 'assistant' || policyAutonomy === 'closer'
+      ? policyAutonomy
+      : 'standard')
+
+  async function changeAutonomy(level: 'assistant' | 'standard' | 'closer') {
+    if (savingAutonomy || level === currentAutonomy) return
+    setSavingAutonomy(true)
+    setAutonomyNote('')
+    try {
+      const next = JSON.parse(JSON.stringify(rules.data!.rules)) as unknown as Record<string, unknown>
+      if (level === 'standard') delete next.agent_policy
+      else next.agent_policy = { ...(next.agent_policy as object | undefined), autonomy: level }
+      await glueApi.pricingSave(next as never)
+      setAutonomy(level)
+      setAutonomyNote(`AI autonomy set to ${level} — live immediately, no restart.`)
+    } catch (e) {
+      setAutonomyNote(e instanceof Error ? `Save failed — ${e.message}` : 'Save failed.')
+    } finally {
+      setSavingAutonomy(false)
+    }
+  }
 
   async function run(withFile: boolean) {
     setRunning(true)
@@ -98,9 +129,38 @@ export function PricingPage() {
         title="Terms"
         bodyClassName="p-4"
         action={
-          <Button variant="primary" size="sm" onClick={() => setEditing(true)}>
-            Edit rules
-          </Button>
+          <div className="flex items-center gap-3">
+            <div
+              className="flex items-center rounded-md border border-line p-0.5"
+              role="group"
+              aria-label="AI autonomy level"
+            >
+              {(['assistant', 'standard', 'closer'] as const).map((lvl) => (
+                <button
+                  key={lvl}
+                  onClick={() => changeAutonomy(lvl)}
+                  disabled={savingAutonomy}
+                  title={
+                    lvl === 'assistant'
+                      ? 'The AI never quotes — every price ask goes to a human.'
+                      : lvl === 'standard'
+                        ? 'Inline computed quotes within the rules; gaps go to a human.'
+                        : 'Works ambiguous threads harder: one clarifying question before handoff.'
+                  }
+                  className={`rounded px-2 py-1 text-caption capitalize transition-colors duration-150 ${
+                    currentAutonomy === lvl
+                      ? 'bg-brand-wash font-semibold text-brand'
+                      : 'text-text-secondary hover:bg-surface-subtle'
+                  }`}
+                >
+                  {lvl}
+                </button>
+              ))}
+            </div>
+            <Button variant="primary" size="sm" onClick={() => setEditing(true)}>
+              Edit rules
+            </Button>
+          </div>
         }
       >
         <KeyValue
@@ -111,6 +171,7 @@ export function PricingPage() {
             ['Manual-only configs', manualOnly.map((m) => m.size).join(', ') || 'none'],
           ]}
         />
+        {autonomyNote && <p className="mt-3 text-caption text-[#15803D]">{autonomyNote}</p>}
         <p className="mt-3 text-caption text-text-muted mono">{rules.data.path}</p>
       </SectionPanel>
 

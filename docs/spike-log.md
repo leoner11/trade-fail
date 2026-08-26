@@ -1719,3 +1719,41 @@ Chatwoot containers still RUNNING but unused (flag off) — stop them in a
 later cleanup once v1.2 soaks. Stamp (:8090 caddy) still pending as a
 deployment step. Legacy /console/inbox/* glue endpoints retained untouched
 for rollback. dify DSL fake-promise (#34) still queued (needs re-import).
+
+### Session #13 cont. 6 (02:xx) — the AUTONOMY DIAL (Leonard: "control the
+### 程度 of the decisions")
+
+Bosses differ: some want an assistant that barely decides, some want a
+closer. Implemented as a DATA dial in S2 (`agent_policy.autonomy`), riding
+the EXISTING hot-reload pipeline — no new endpoints, no restarts, editor-
+compatible (calc validator ignores unknown keys, same precedent as
+price_visibility v3).
+
+- **assistant** — AI never touches money: PRICE_Q → honest holding line
+  ("team is preparing your quotation") + escalation armed for a human quote.
+  Specs/capability/thread behavior unchanged.
+- **standard** (default; key absent = standard) — everything built today.
+- **closer** — ambiguous OTHER gets ONE clarifying question before handoff
+  (commits to nothing; grounded menu of options offered), budget resets when
+  any message routes successfully. Second ambiguity still escalates.
+
+NON-NEGOTIABLE at every level: always-human list (complaints, payment/legal,
+discount beyond authority cap, unknown tiers, internal-only pricing). The
+dial moves SALES autonomy, never safety.
+
+Console: segmented control on Pricing → Terms panel header
+(assistant/standard/closer) writing agent_policy via the same save endpoint
+as the editor (validate → .bak → write → calc reload → glue vocab refresh).
+'standard' REMOVES the key entirely (clean data story). Live-immediate.
+
+Drilled LIVE through the real save pipeline:
+- assistant: "price for 2 DG-50 STD" → holding line, NO numbers, escalation
+  armed ✓ (hot reload proven — glue picked up the level without restart)
+- closer: greeting ✓ → "what about that thing we talked about?" (conf 0.6)
+  → clarifying question WITH menu ("diesel gensets, ATS panels, soundproof
+  containers") ✓ → "so?? is yes or no" (conf 0.75, budget spent) → normal
+  handoff ✓
+- restored standard; full gate board re-run GREEN (calc 22/22 · e2e 13/13 ·
+  voice PASS · B4 12/12 · S9 5/5 after the usual S6 clear · O5 10/10).
+Gates pin STANDARD behavior — a client may only move OFF standard AFTER
+go-live gates pass; document per client.

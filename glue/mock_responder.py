@@ -169,6 +169,9 @@ TEMPLATES = {
                            "are quoted by our team only. I've passed your "
                            "request to a colleague who will confirm the "
                            "numbers with you right here shortly."),
+        "manual_quote": ("Great question! Our team is preparing your "
+                         "quotation now — a colleague will send the numbers "
+                         "right here shortly."),
     },
     "zh": {
         "greet": ("您好！我是销售助手。欢迎咨询产品规格、MOQ 或价格，"
@@ -196,6 +199,8 @@ TEMPLATES = {
                       "我们的团队正在处理，将尽快回复您。"),
         "internal_price": ("感谢咨询！您提到的部分产品由团队专门报价，"
                            "已将您的需求转交同事，稍后将在此为您确认具体价格。"),
+        "manual_quote": ("好的！我们的团队正在为您准备报价，"
+                         "同事会很快把具体数字发给您。"),
     },
 }
 
@@ -462,6 +467,12 @@ VOICE_PROMPT = (ROOT / "dify" / "prompts" / "voice_guide.md").read_text().split(
 RULES_PATH = cfg("PRICING_RULES", str(ROOT / "spine" / "rules" /
                                         "pricing_rules.example.json"))
 RULES: dict = {}
+# How much the agent may decide (S2 agent_policy.autonomy, hot-reloaded):
+#   assistant — never touches money: every price ask -> human quote
+#   standard  — inline computed quotes within S2 rules (the default)
+#   closer    — works ambiguous threads harder: ONE clarifying question
+#               before handing off. Always-human list is sacred at ALL levels.
+AUTONOMY = "standard"
 MATERIALS: list[str] = []
 SIZES: list[str] = []
 PROCESSES: list[str] = []
@@ -471,12 +482,17 @@ PARSE_PROMPT = ""
 def _refresh_rules_vocab() -> None:
     """(Re)build the closed parse vocabulary + PARSE_PROMPT from RULES_PATH.
     Called at boot AND after every console pricing save, so an edited file
-    reaches the B1 parser without a glue restart."""
-    global RULES, MATERIALS, SIZES, PROCESSES, PARSE_PROMPT
+    reaches the B1 parser without a glue restart. Also picks up the agent
+    autonomy dial (S2 agent_policy) — bosses choose how much the AI may
+    decide; hot-reloads with the same save pipeline."""
+    global RULES, MATERIALS, SIZES, PROCESSES, PARSE_PROMPT, AUTONOMY
     RULES = json.loads(Path(RULES_PATH).read_text())
     MATERIALS = [m["name"] for m in RULES["material_base_prices"]]
     SIZES = [s["size"] for s in RULES["size_coefficients"]]
     PROCESSES = [p["name"] for p in RULES["process_fees"]]
+    pol = RULES.get("agent_policy") or {}
+    AUTONOMY = pol.get("autonomy") if pol.get("autonomy") in (
+        "assistant", "standard", "closer") else "standard"
     PARSE_PROMPT = f"""You parse ONE buyer message into a structured quote request.
 Return ONE JSON object, nothing else.
 
@@ -2143,6 +2159,9 @@ def route(customer: dict, text: str, remote: str = "") -> str | None:
     intent = cls.get("intent")
     lang = (cls.get("language") or "en")[:2]
     _THREAD.setdefault(remote, {})["lang"] = lang
+    if cls.get("route") != "human":
+        # a successfully-routed exchange re-arms the closer's clarify budget
+        _THREAD.get(remote, {}).pop("clarified", None)
     print(f"[a3] intent={intent} lang={lang} conf={cls.get('confidence')} "
           f"urgency={cls.get('urgency')} sentiment={cls.get('sentiment')} "
           f"route={cls.get('route')}", flush=True)
@@ -2317,6 +2336,22 @@ def route(customer: dict, text: str, remote: str = "") -> str | None:
         return reply
 
     if intent == "PRICE_Q":
+        if AUTONOMY == "assistant":
+            # dial = assistant: the AI never touches money. Human prepares
+            # the numbers; buyer hears the honest holding line.
+            print("[policy] autonomy=assistant -> price ask to human",
+                  flush=True)
+            reply = (compose(
+                "the buyer asks for pricing — say the team is preparing a "
+                "quotation for them and a colleague will send the numbers "
+                "here shortly; do NOT give any price, figure or discount",
+                lang, text, remote=remote)
+                or tt(lang, "manual_quote"))
+            escalate_to_chatwoot(remote, text, "PRICE_Q", lang, customer,
+                                 reply,
+                                 "Autonomy=assistant — AI does not quote; "
+                                 "human prepares the quotation.\n")
+            return reply
         parsed = glm(PARSE_PROMPT, text)
         action = parsed.get("action")
         print(f"[b1] parse action={action} lines={parsed.get('lines')}", flush=True)
@@ -2443,6 +2478,26 @@ def route(customer: dict, text: str, remote: str = "") -> str | None:
             remote, text, intent, lang, customer, reply,
             f"Urgency {cls.get('urgency')}, sentiment {cls.get('sentiment')} — "
             "always-human list, priority complaint.\n")
+        return reply
+    # dial = closer: ONE clarifying question before giving an ambiguous
+    # message to a human. Commits to nothing, so it stays inside the safety
+    # envelope; once per thread, then the normal handoff applies.
+    th_c = _THREAD.get(remote) or {}
+    if AUTONOMY == "closer" and not th_c.get("clarified") and th_c.get("greeted"):
+        _THREAD.setdefault(remote, {})["clarified"] = True
+        print("[policy] autonomy=closer -> clarify instead of handoff",
+              flush=True)
+        reply = (compose(
+            "the buyer's message is unclear — ask ONE short, friendly "
+            "clarifying question to understand what they need; commit to "
+            "NOTHING: no capabilities, no prices, no opinions on their "
+            "plans", lang, text, facts=_company_line(), remote=remote)
+            or tt(lang, "human"))
+        escalate_to_chatwoot(remote, text, intent or "OTHER", lang, customer,
+                             reply,
+                             f"Autonomy=closer — AI asked a clarifying "
+                             f"question first (conf {cls.get('confidence')}). "
+                             "Escalation armed as fallback.\n")
         return reply
     print(f"[a6] escalate intent={intent}", flush=True)
     reply = (compose("the message is outside what you can answer — do NOT "
