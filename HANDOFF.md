@@ -20,6 +20,8 @@ v1 = inquiry auto-response → quoting → social. The Bible: `WEAVE_PLAN.md`,
 | Phase A intake→triage→RAG | ✅ live | glue :8102 → dify :8180 (GLM fallback) |
 | A4 KB answers + never-guess | ✅ **O2 quiz 20/20, 0 fabrications** | `tests/test_o2_quiz.py` |
 | A6 escalation + human loop | ✅ **v1.2: spine S4 store** — chatwoot OFF (`CHATWOOT_ENABLED=0`), Threads page in console, take-over via evo direct, sla_tick reads spine | glue `_mirror`+`escalate`, `/console/threads/*`, spine `/conversations/*` |
+| Agent autonomy dial | ✅ `assistant`/`standard`/`closer` in S2 `agent_policy` — console toggle on Pricing→Terms, hot-reloads via the save pipeline; always-human list sacred at ALL levels | PricingPage header + glue `AUTONOMY` |
+| Natural-sales voice layer | ✅ thread continuity, offer fulfillment ("yes please"/"10 units" close the loop), grounded not-our-line, capability answers from S1, alias resolution, noise gate | session #13, spike-log traps #32–#41 |
 | B inline quotes | ✅ calc :8100 (generator rules), S5 save+sent | `tests/e2e_spike.py` 13/13 |
 | B4 formal PDF in chat | ✅ carbone :8200 + soffice → evo sendMedia | `tests/test_b4.py` 12/12 |
 | B5 human quote path | ✅ gaps hint lands in chatwoot w/ draft | glue escalate hooks |

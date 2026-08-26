@@ -6,80 +6,84 @@ Copy everything below the line.
 
 You are continuing the MJCX Trade Agent Appliance — a working, gated product.
 Read these first, in order: `HANDOFF.md` (state table + gate board + queue),
-`docs/spike-log.md` (traps #1–#31 — do not re-hit them), and
-`docs/console-plan.md` (design contract; **Part 2 v1.1 A+B+C is DONE**).
-Everything claimed in those files was executed and verified; do not redo it.
+`docs/ARCHITECTURE.md` (v1.2 system map — NEW, read it), `docs/spike-log.md`
+(traps #1–#41 — do not re-hit them), and `docs/console-plan.md` (design
+contract; Part 2 v1.1 done). Everything claimed was executed and verified;
+do not redo it.
 
-## Where things stand
+## Where things stand (session #13, 2026-08-25/26)
 
-- v1 appliance + Appliance Console v1.1: ALL SHIPPED AND GATED
-  (calc 22/22 · e2e 13/13 · classify PASS · voice PASS · B4 12/12 ·
-  O2 20/20+0fab last run · O5 auto 10/10 · S9 5/5 · build/lint clean).
-- Console v1.1 (session #12, 2026-08-25) delivered:
-  - **A Inbox face + take-over**: `/console/inbox/*` glue proxies over
-    chatwoot (second client, never second store). Two-col tab at `/inbox`,
-    violet bot lines vs plain humans, free-edit PUBLIC reply under the ADMIN
-    identity. `CHATWOOT_ADMIN_TOKEN` in `.env` — trap #28: the old API token
-    belonged to the evo-bridge user and could NEVER flip sla_tick. Drill
-    passed (beacon before reply, silent after, idempotency ruled out).
-  - **B Pricing form editor**: calc `POST /rules/reload` (+ `/rules/validate`,
-    lock + .bak rollback); glue save endpoint refreshes its B1 parse vocab
-    live (no restart); console §20 overlay w/ guarded numerics, semantic
-    +/- diff, add/delete of process fees & sizes, editable ISO currency.
-    Glue now passes S2 currency into calc (was silently cosmetic before).
-  - **C Price visibility**: S2 schema v3 `price_visibility`
-    (STS-200 = internal_only), enforced STRUCTURALLY in glue BEFORE calc —
-    internal asks route to B5, buyer hears "team will confirm". Editor
-    toggle + viewer eye column + QuotesPage "internal" tag w/ hidden totals.
-  - **Leonard's same-day follow-ups**: manual catalog add/edit/delete
-    (`POST /catalog/item`, `DELETE /catalog/{sku}`), KB "write a doc"
-    textarea (reuses kb/ingest), and staff-set customer tiers:
-    `PATCH /customers/{cid}` + CustomersPage edit panel — tier select is
-    sourced FROM S2's tier list (agent never assigns tiers; unknown tier ⇒
-    calc escalates; changes audited as S8 `tier_change` events).
-- Rules of record: `spine/rules/pricing_rules.generators.json` schema **v3**
-  (keep `price_visibility` intact when the boss's real numbers land; the
-  editor round-trips it automatically). Placeholder prices until O3.
-- `/console/*` glue endpoints bearer-gated by CONSOLE_TOKEN (in `.env`;
-  never print it). Buyer webhook stays unauthenticated by design (hardening
-  note in HANDOFF/spike-log).
-- Stack on this Mac (left running): colima up; evo/dify/chatwoot/n8n/postiz/
-  carbone containers up; uvicorns calc :8100 (RULES_PATH=generators.json,
-  set by keepalive) + spine :8101 + glue :8102 up under
-  `scripts/dev_keepalive.sh`. Boot recipe if needed: `runbooks/cold-start.md`.
-  Dev console: `cd console && npm run dev`. Spike artifacts left in place on
-  purpose: chatwoot conv #3 (open, for Inbox-tab eyeballing).
+- v1 appliance + console v1.1 + **voice overhaul** + **v1.2 THREADS** +
+  **autonomy dial**: ALL SHIPPED AND GATED. Board after session #13:
+  calc 22/22 · e2e 13/13 · classify PASS · voice PASS (8 cases) · B4 12/12 ·
+  O5 auto 10/10 · S9 5/5 · O2 last state 20/20+0fab (skipped #13 with cause:
+  dify apps untouched) · build/lint clean.
+- **Voice overhaul** (Leonard's real-thread evidence): no more stalls,
+  re-greets, or generic pitches. Thread continuity; grounded "not our line"
+  + pivot (S1 aliasing: "the ats panel"→ATS-50); concrete capability answers
+  from real catalog facts; offer fulfillment — "yes please" delivers info or
+  the PDF, "10 units" computes an inline quote (forced PRICE_Q, trap #40);
+  zh softeners + seeded samples. Verified on Leonard's real phone.
+- **v1.2 THREADS — chatwoot removed from the loop**: spine S4 store
+  (`conversations`+`messages`) mirrors every line via glue `_mirror`;
+  escalations arm as thread tags w/ staff notes + S8 events; console
+  ThreadsPage (route /inbox) = two-col threads, violet bot vs plain human,
+  take-over reply sends via evo DIRECTLY and clears the flag; sla_tick v2
+  reads spine. Chatwoot still installed but OFF (`CHATWOOT_ENABLED=0` in
+  `.env`); legacy `/console/inbox/*` glue proxies kept as rollback.
+- **Autonomy dial**: S2 `agent_policy.autonomy` = assistant / standard /
+  closer; toggle on Pricing→Terms header; rides the pricing-save pipeline
+  (hot reload, no restart). assistant never quotes; closer asks ONE
+  clarifying question before handoff. Gates pin STANDARD. Always-human list
+  sacred at all levels.
+- **Lag root-caused & fixed** (trap #41): webhook routing offloaded to a
+  worker thread — console polls stay <150ms during active LLM routing.
+- Rules of record: `spine/rules/pricing_rules.generators.json` schema v3
+  (`price_visibility`; `agent_policy` currently ABSENT = standard). Editor
+  round-trips both keys. Placeholder prices until O3.
+- Repo: everything committed on `main` in a deliberate series (~15 commits);
+  NO remote configured yet (push pending Leonard creating one). Working tree
+  clean.
+- Stack running: colima; evo/dify/chatwoot(off)/n8n/postiz/carbone
+  containers; uvicorns calc :8100 (RULES_PATH=generators.json via keepalive)
+  + spine :8101 + glue :8102 under `scripts/dev_keepalive.sh`. Console dev:
+  `cd console && npm run dev` (:5173). **:8090 caddy stamp NOT shipped yet**
+  (nothing listens there — don't mistake that for a broken console).
+- Spike artifacts left deliberately: chatwoot convs #3/#4 (pre-v1.2
+  evidence), spine conversations #1–#4 (v1.2 drills incl. SLA drill).
 
 ## Your task
 
-No big spec'd build queue remains — the console-plan Part 2 is fully built.
-Work falls into three buckets, in this order:
-
-1. **Support the go-live gates (human inputs — assist, don't wait):**
+1. **Soak + ship v1.2 (first hour):**
+   - Visual pass WITH Leonard of the Threads tab (:5173) — escalation
+     badges, take-over to his phone, Resolve flow.
+   - If he's happy: stop chatwoot containers (compose override), keep the
+     rollback documented; then ship the :8090 stamp (console Dockerfile +
+     caddy per docs/console-plan §2) so the dashboard isn't dev-only.
+2. **Go-live gates (human inputs — assist, don't wait):**
    - **O3 boss pricing interview** (`runbooks/o3-pricing-interview.md`) —
-     ≥10 REAL quotes → `data/o3_history.json` → backtest must hit ≥90%
-     within ±2% before ANY client go-live. If Leonard brings numbers mid-
-     session: capture them as a NEW rules JSON (v3!), swap PRICING_RULES,
-     run the backtest through the console, help interpret misses.
+     ≥10 REAL quotes → `data/o3_history.json` (gitignored!) → backtest ≥90%
+     within ±2% before ANY client go-live. Capture boss rules as a NEW v3
+     JSON (keep price_visibility; agent_policy only if he chooses non-
+     standard), swap PRICING_RULES, backtest via console, interpret misses.
    - **Postiz channel connect** — owner signup :13000, channels, API key →
      `.env POSTIZ_API_KEY` → restart glue → rerun
      `tests/test_o5_s9_social.py --expect-scheduled`.
    - **Phone drills**: S4 PDF-in-thread repeat; S10 live QR drop
-     (`tests/test_o5_s10_qr_drill.py --execute`, <5 min target); visual pass
-     of the Inbox tab + pricing editor + catalog forms on :5173/:8090.
-2. **Optional polish (pick only if no human input is available):**
-   - escalation-note dedupe in chatwoot (consecutive OTHER escalations re-arm
-     the same conversation with identical notes);
-   - "what do you actually do?" should answer concretely instead of
-     greeting-pitch;
-   - webhook-auth hardening design (buyer webhook is deliberately open —
-     document options before touching anything);
-   - X5 report: surface the new `tier_change` audit events.
-3. **Repo hygiene (ask Leonard first — committing is his call):** the whole
-   appliance (glue/, console/, tests/, docs/, compose changes…) is still
-   uncommitted on `main`. If he agrees: stage deliberately, no secrets
-   (`.env` is ignored; verify `.gitignore` covers `.env`, `.bak` files,
-   `spine/quotes_pdf/`), sensible commit series, then push if a remote exists.
+     (`tests/test_o5_s10_qr_drill.py --execute`, <5 min).
+3. **Queued engineering polish (pick when no human input available):**
+   - dify spec DSL fake-promise (#34): structured [NOT_FOUND]-style marker
+     in the code node + RE-IMPORT cycle (find the import procedure used for
+     a3_triage/spec_answer; update DIFY keys if the app id changes); gates
+     after.
+   - Webhook-auth hardening DESIGN DOC first (buyer webhook deliberately
+     open — options + recommendation before touching anything).
+   - X5 report: surface S8 `tier_change` events.
+   - Escalation-note dedupe glue-side (consecutive OTHER escalations still
+     append near-identical system notes to the same spine thread).
+   - Voice-gate flake: capability-zh variation case is borderline
+     (canonical opener) — consider stronger diversification for list-format
+     replies if it trips again.
 
 ## House rules (unchanged, sacred)
 
@@ -90,21 +94,21 @@ Work falls into three buckets, in this order:
 4. After every glue/spine/calc edit, re-run gates: `tests/e2e_spike.py`,
    `tests/test_o5_s9_social.py`, `tests/test_voice.py`, `tests/test_b4.py`,
    (+ classifier when prompts change). Frontend: `npm run build` +
-   `npm run lint` clean. If the data story changes, re-run EVERY gate —
-   stale fixtures bite (traps #29/#30).
+   `npm run lint` clean. Data story changed? Re-run EVERY gate (#29/#30).
+   Never block an async handler on sync I/O (#41) — use asyncio.to_thread.
 5. Append a dated entry to `docs/spike-log.md` per task with raw results;
    keep HANDOFF §5 current. One in_progress todo at a time.
-6. New traps get numbers (#32+).
+6. New traps get numbers (#42+).
 
 ## Start here
 
-1. `git status` + skim the tail of `docs/spike-log.md` (sessions #12*) to
+1. `git status` + skim the tail of `docs/spike-log.md` (sessions #13*) to
    confirm state matches above.
 2. Health check: `curl localhost:8100/health localhost:8101/health
-   localhost:8102/health` — keepalive revives any dead uvicorn within 30s;
+   localhost:8102/health` — keepalive revives dead uvicorns within 30s;
    containers per cold-start §2 if down.
-3. Then work bucket 1 with whatever human input exists today; bucket 3 needs
-   an explicit yes from Leonard.
+3. Then bucket 1 (soak+ship) with Leonard, bucket 2 with whatever human
+   input exists today. Committing/pushing is Leonard's call — ask first.
 
 Standing human blockers (don't wait on them): boss O3 interview ≥10 REAL
 quotes, postiz key/channels, phone drills.
