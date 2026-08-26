@@ -186,26 +186,24 @@ SLA_HOURS. Idempotent — S8 events prevent double nudges.
 
 ## Optional: postiz — Phase C social publisher (:13000)
 
+**v1.2 (2026-08-26): run it from the compose file, NOT docker run** — the
+compose pins `postiz-app:v2.11.2` (trap #42: `latest` ≥ v2.12 needs a
+Temporal stack or the backend crashes while the frontend LOOKS fine).
+
 ```bash
-docker run -d --name postiz-postgres --network evo-net \
-  -e POSTGRES_PASSWORD=postiz-pwd -e POSTGRES_USER=postiz-user -e POSTGRES_DB=postiz-db \
-  -v postiz-pg-data:/var/lib/postgresql/data postgres:17-alpine
-docker run -d --name postiz-redis --network evo-net redis:7-alpine
-docker run -d --name postiz --network evo-net -p 127.0.0.1:13000:5000 \
-  -e JWT_SECRET=<openssl rand -hex 24> -e IS_GENERAL=true -e NODE_ENV=production \
-  -e BACKEND_INTERNAL_URL=http://localhost:5000 -e BACKEND_URL=http://localhost:13000 \
-  -e NEXT_PUBLIC_BACKEND_URL=http://localhost:13000/public/v1 \
-  -e FRONTEND_NX_URL=http://localhost:13000 -e NX_ADD_PLUGINS=false \
-  -e "DATABASE_URL=postgresql://postiz-user:postiz-pwd@postiz-postgres:5432/postiz-db?schema=public" \
-  -e REDIS_URL=redis://postiz-redis:6379 \
-  -v postiz-config:/config/ -v postiz-uploads:/uploads/ \
-  ghcr.io/gitroomhq/postiz-app:latest
+docker compose -f compose/docker-compose.appliance.yml --env-file .env \
+  up -d postiz-postgres postiz-redis postiz
+# if the port is squatted by an old hand-run container:
+#   docker rm -f postiz postiz-postgres postiz-redis   (safe pre-key: nothing persists)
 ```
 
 ⚠ the image serves on **5000**, not 3000 (trap #25). First boot: open
 http://localhost:13000 → owner signup → connect client channels → create
 API key → put in `.env` POSTIZ_API_KEY. Until then approvals still work;
 push is skipped + logged (`postiz_push_skipped` in S8).
+Verify health: all four pm2 processes `online`
+(`docker exec trade-agent-postiz-1 pm2 list`) + backend log shows
+"🚀 Backend is running".
 
 ## Shutting it all down again
 

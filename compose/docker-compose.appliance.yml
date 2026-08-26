@@ -175,7 +175,11 @@ services:
     restart: unless-stopped
 
   postiz:
-    image: ghcr.io/gitroomhq/postiz-app:latest   # serves on 5000, NOT 3000 (trap #25)
+    # PINNED to v2.11.2 (trap #42): latest >= v2.12.0 requires a Temporal
+    # stack (TEMPORAL_ADDRESS) or the backend crashes on boot — frontend
+    # stays up, so the organ LOOKS alive while auth/scheduling are dead.
+    # Revisit only with the official postiz-docker-compose Temporal stack.
+    image: ghcr.io/gitroomhq/postiz-app:v2.11.2   # serves on 5000, NOT 3000 (trap #25)
     depends_on: [postiz-postgres, postiz-redis]
     ports: ["127.0.0.1:13000:5000"]      # staff social UI on :13000
     environment:
@@ -184,6 +188,11 @@ services:
       IS_GENERAL: "true"
       NEXT_PUBLIC_BACKEND_URL: ${POSTIZ_PUBLIC_URL:-http://localhost:13000}/public/v1
       FRONTEND_NX_URL: ${POSTIZ_PUBLIC_URL:-http://localhost:13000}
+      MAIN_URL: ${POSTIZ_PUBLIC_URL:-http://localhost:13000}
+      FRONTEND_URL: ${POSTIZ_PUBLIC_URL:-http://localhost:13000}
+      STORAGE_PROVIDER: "local"
+      UPLOAD_DIRECTORY: "/uploads/"
+      NEXT_PUBLIC_UPLOAD_STATIC_DIRECTORY: "/uploads/"
       NX_ADD_PLUGINS: "false"
       DATABASE_URL: postgresql://postiz-user:${POSTIZ_DB_PASSWORD:-postiz-pwd}@postiz-postgres:5432/postiz-db?schema=public&connection_limit=20&pool_timeout=60&connect_timeout=15
       REDIS_URL: redis://postiz-redis:6379

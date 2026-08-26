@@ -1757,3 +1757,34 @@ Drilled LIVE through the real save pipeline:
   voice PASS · B4 12/12 · S9 5/5 after the usual S6 clear · O5 10/10).
 Gates pin STANDARD behavior — a client may only move OFF standard AFTER
 go-live gates pass; document per client.
+
+### Session #13 cont. 7 (04:xx) — postiz "can't login" root-caused: the
+### backend was NEVER alive (trap #42)
+
+Leonard: signup worked, login doesn't. Diagnosis: `docker logs postiz` —
+backend (Nest) crashes on boot since v2.12.0: it REQUIRES a reachable
+Temporal scheduler (`TEMPORAL_ADDRESS`, port 7233); unset → falls back to
+localhost:7233 → ECONNREFUSED → process dies. The Next frontend survives,
+so :13000 serves a login PAGE whose every request dead-ends. Signup looked
+like it worked; nothing persisted. Our S9 gate never caught it because it
+gracefully skips without POSTIZ_API_KEY — and `/console/organs` probes only
+frontend reachability.
+
+Fix (appliance-appropriate): PINNED `ghcr.io/gitroomhq/postiz-app:v2.11.2`
+(last pre-Temporal release) in compose + MAIN_URL/FRONTEND_URL/
+STORAGE_PROVIDER=local env to silence config warnings. Removed the old
+hand-run containers (safe: nothing had ever persisted) and recreated via
+compose. Now: all four pm2 processes online, backend "🚀 running", auth
+endpoints answering.
+
+ALSO found: compose-created container came up with NO network attached
+(empty Networks after the earlier port-bind failure) — force-recreate
+fixed it. If a compose service looks alive but is unreachable, check
+`.NetworkSettings.Networks` for {}.
+
+### New trap
+
+42. **`latest` organ images rot under you.** Postiz ≥2.12 silently needs a
+    Temporal stack; the failure mode is nasty (backend dead, frontend
+    alive = organ looks healthy). Pin versions in compose; probe organs
+    with a REAL endpoint, not a TCP connect / homepage 200.
