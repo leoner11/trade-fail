@@ -66,8 +66,11 @@ do not redo it.
      within ±2% before ANY client go-live. Capture boss rules as a NEW v3
      JSON (keep price_visibility; agent_policy only if he chooses non-
      standard), swap PRICING_RULES, backtest via console, interpret misses.
-   - **Postiz channel connect** — owner signup :13000, channels, API key →
-     `.env POSTIZ_API_KEY` → restart glue → rerun
+   - **Postiz channel connect** — FIXED 2026-08-26 (trap #42: backend was
+     dead behind a live frontend; now pinned v2.11.2, all processes
+     online). Leonard signs up FRESH at :13000 (the old signup never
+     persisted), connects channels, creates API key → `.env
+     POSTIZ_API_KEY` → restart glue → rerun
      `tests/test_o5_s9_social.py --expect-scheduled`.
    - **Phone drills**: S4 PDF-in-thread repeat; S10 live QR drop
      (`tests/test_o5_s10_qr_drill.py --execute`, <5 min).
