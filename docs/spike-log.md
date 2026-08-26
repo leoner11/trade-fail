@@ -1788,3 +1788,24 @@ fixed it. If a compose service looks alive but is unreachable, check
     Temporal stack; the failure mode is nasty (backend dead, frontend
     alive = organ looks healthy). Pin versions in compose; probe organs
     with a REAL endpoint, not a TCP connect / homepage 200.
+
+### Session #13 cont. 8 (04:xx) — postiz signup error: browser cache skew
+### (trap #43), auth stack PROVEN working
+
+After the v2.11.2 pin, Leonard hit "router state header could not be
+parsed" on signup. That's a Next.js deployment-skew error: his browser
+held JS chunks from the OLD `latest` frontend; stale client ↔ new server.
+Verified server-side health end-to-end via API:
+- POST /api/auth/register {email,password,name,company,provider:"LOCAL"}
+  → {"register":true} 200   (provider must be UPPERCASE "LOCAL")
+- POST /api/auth/login {email,password,provider:"LOCAL"} → {"login":true}
+Probe account left in postiz DB: probe@mjcx.test / ProbeTest123! (harmless;
+deletable from UI). Frontend logs may still show occasional router-state
+errors from any stale tab — benign once cache cleared.
+
+### New trap
+
+43. **After re-pinning/repinning an organ image, BROWSER CACHE betrays the
+    demo.** Old frontend chunks vs new server produce cryptic Next.js
+    errors that look like backend failures. Rule: after any organ version
+    change, test auth flows in incognito FIRST, then clear site data.
