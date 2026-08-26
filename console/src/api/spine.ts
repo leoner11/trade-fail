@@ -82,6 +82,26 @@ export interface GapReport {
   gap_report: { sku: string; missing: string[] }[]
 }
 
+export interface X5Report {
+  days: number
+  conversations: { total: number; ai_handled: number; escalated: number; human_only: number }
+  median_response_seconds: number | null
+  responses_measured: number
+  top_products: { name: string; count: number }[]
+  kb_misses: { ts: string; contact: string; tag: string; snippet: string }[]
+  escalation_reasons: Record<string, number>
+  tier_changes: ({ ts: string } & Record<string, unknown>)[]
+  quotes: {
+    sent: number
+    accepted: number
+    rejected: number
+    win_rate_pct: number | null
+    value_sent: number
+  }
+  sla_beacons: number
+  social: { posted_or_scheduled: number; pending: number }
+}
+
 export const spine = {
   listQuotes: (params: { status?: string; older_than_hours?: number; limit?: number } = {}) => {
     const q = new URLSearchParams()
@@ -97,6 +117,7 @@ export const spine = {
     ),
   listEvents: (kind = '', limit = 50) =>
     apiFetch<ListResp<EventRow>>(`/spine/events?limit=${limit}${kind ? `&kind=${kind}` : ''}`),
+  reportX5: (days: number) => apiFetch<X5Report>(`/spine/reports/x5?days=${days}`),
   listCustomers: () => apiFetch<ListResp<CustomerRow>>('/spine/customers'),
   getCustomer: (cid: string) => apiFetch<CustomerRow>(`/spine/customers/${cid}`),
   updateCustomer: (cid: string, patch: Partial<Pick<CustomerRow, 'tier' | 'name' | 'country' | 'language' | 'email'>>) =>

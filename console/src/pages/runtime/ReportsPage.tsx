@@ -15,6 +15,21 @@ const PERIODS: { key: Period; label: string; days: number | 'calendar' }[] = [
   { key: 'month', label: 'This month', days: 'calendar' },
 ]
 
+function periodDays(period: Period): number {
+  if (period === '30d') return 30
+  const now = new Date()
+  const start = new Date(now.getFullYear(), now.getMonth(), 1)
+  return Math.max(1, Math.ceil((now.getTime() - start.getTime()) / 86400000))
+}
+
+function fmtSpan(seconds: number | null): string {
+  if (seconds == null) return '—'
+  const s = Math.round(seconds)
+  if (s >= 3600) return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`
+  if (s >= 60) return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
+  return `${s}s`
+}
+
 function inPeriod(ts: string, period: Period): boolean {
   if (!ts) return false
   const d = new Date(ts.includes('T') || ts.includes('+') ? ts : ts.replace(' ', 'T') + 'Z')
@@ -35,6 +50,8 @@ export function ReportsPage() {
   const quotes = useAsync(() => spine.listQuotes({ limit: 500 }), [])
   const events = useAsync(() => spine.listEvents('', 500), [])
   const posts = useAsync(() => spine.listPosts('', 200), [])
+  const days = periodDays(period)
+  const report = useAsync(() => spine.reportX5(days), [days])
 
   const agg = useMemo(() => {
     const q: QuoteRow[] = quotes.data?.items ?? []
@@ -132,6 +149,31 @@ export function ReportsPage() {
         <KpiTile label="Posts published/scheduled" value={String(agg.posted)} />
       </div>
 
+      {report.data && (
+        <>
+          <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
+            <KpiTile
+              label="AI handled conversations"
+              value={`${report.data.conversations.ai_handled} / ${report.data.conversations.total}`}
+            />
+            <KpiTile label="Median response time" value={fmtSpan(report.data.median_response_seconds)} />
+            <KpiTile
+              label="Unanswerable (KB misses)"
+              value={String(report.data.kb_misses.length)}
+            />
+            <KpiTile label="Tier changes" value={String(report.data.tier_changes.length)} />
+          </div>
+          <SectionPanel title="Coverage" bodyClassName="p-4">
+            <p className="text-body text-text-secondary">
+              Of {report.data.conversations.total} conversations the AI fully
+              handled {report.data.conversations.ai_handled}, handed{' '}
+              {report.data.conversations.escalated} to a human, and{' '}
+              {report.data.conversations.human_only} were human-only threads.
+            </p>
+          </SectionPanel>
+        </>
+      )}
+
       <SectionPanel title="Money" bodyClassName="p-4">
         <p className="text-body text-text-primary tabular">
           Total quoted in period:{' '}
@@ -176,6 +218,42 @@ export function ReportsPage() {
           {agg.beacons} SLA beacons fired
         </p>
       </SectionPanel>
+
+      {report.data && (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <SectionPanel title="Unanswerable questions (KB misses)" bodyClassName="p-0">
+            <DataTable
+              columns={[
+                { key: 'snippet', header: 'Buyer asked' },
+                { key: 'contact', header: 'Contact', mono: true },
+              ]}
+              rows={report.data.kb_misses.slice(0, 10)}
+              rowKey={(r) => r.ts + r.contact}
+              emptyMessage="Every question found an answer in this period."
+            />
+            <p className="border-t px-4 py-2 text-caption text-text-muted">
+              These are SPEC_Q escalations — write the answers into the knowledge base.
+            </p>
+          </SectionPanel>
+
+          <SectionPanel title="Tier changes (S8 audit)" bodyClassName="p-0">
+            <DataTable
+              columns={[
+                { key: 'customer_id', header: 'Customer', mono: true },
+                {
+                  key: 'change',
+                  header: 'Change',
+                  render: (r) => `${(r as Record<string, unknown>).from ?? '?'} → ${(r as Record<string, unknown>).to ?? '?'}`,
+                },
+                { key: 'ts', header: 'When' },
+              ]}
+              rows={report.data.tier_changes as (Record<string, unknown> & { ts: string })[]}
+              rowKey={(r) => r.ts + String(r.customer_id)}
+              emptyMessage="No tier changes in this period."
+            />
+          </SectionPanel>
+        </div>
+      )}
     </div>
   )
 }

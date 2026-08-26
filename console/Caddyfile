@@ -1,0 +1,22 @@
+# Console stamp (console-plan §2): one origin serves the SPA + both organ
+# proxies. Upstreams are env-overridable so the SAME image works in both
+# topologies:
+#   dev (host uvicorns):  SPINE_UPSTREAM=host.docker.internal:8101 ...
+#   appliance stamp:      SPINE_UPSTREAM=spine:8101 GLUE_UPSTREAM=glue:8102
+# The browser never talks to any other organ directly (design rule).
+:80 {
+	encode zstd gzip
+	# handle_path STRIPS the prefix — matches the vite dev proxy behavior
+	# (same-origin paths /spine/* /glue/* arrive at the organs unprefixed).
+	handle_path /spine/* {
+		reverse_proxy {$SPINE_UPSTREAM:host.docker.internal:8101}
+	}
+	handle_path /glue/* {
+		reverse_proxy {$GLUE_UPSTREAM:host.docker.internal:8102}
+	}
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

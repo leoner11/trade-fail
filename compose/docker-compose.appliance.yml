@@ -57,9 +57,15 @@ services:
   console:
     build:
       context: ..
-      dockerfile: console/Dockerfile   # context = repo root (nginx.conf path)
+      dockerfile: console/Dockerfile   # context = repo root (Caddyfile path)
     ports: ["127.0.0.1:8090:80"]       # THE client-facing UI — Phase O + ops
     depends_on: [spine, glue]
+    environment:
+      # stamp topology: caddy proxies to the containerized organs by name
+      SPINE_UPSTREAM: spine:8101
+      GLUE_UPSTREAM: glue:8102
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # linux hosts; colima provides it anyway (trap #22)
     networks: [appliance]
     restart: unless-stopped
 
@@ -186,7 +192,10 @@ services:
       JWT_SECRET: ${POSTIZ_JWT_SECRET:-replace_with_openssl_rand_hex_48}
       BACKEND_INTERNAL_URL: http://localhost:5000
       IS_GENERAL: "true"
-      NEXT_PUBLIC_BACKEND_URL: ${POSTIZ_PUBLIC_URL:-http://localhost:13000}/public/v1
+      # trap #44: browser joins this base + "/auth/register" verbatim; nginx
+      # routes /api/* to the backend (prefix-stripped). "/public/v1" here sent
+      # signup to the FRONTEND -> 404. v2.11.2 has no /public/v1/auth routes.
+      NEXT_PUBLIC_BACKEND_URL: ${POSTIZ_PUBLIC_URL:-http://localhost:13000}/api
       FRONTEND_NX_URL: ${POSTIZ_PUBLIC_URL:-http://localhost:13000}
       MAIN_URL: ${POSTIZ_PUBLIC_URL:-http://localhost:13000}
       FRONTEND_URL: ${POSTIZ_PUBLIC_URL:-http://localhost:13000}
