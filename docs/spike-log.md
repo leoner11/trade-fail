@@ -1809,3 +1809,16 @@ errors from any stale tab — benign once cache cleared.
     demo.** Old frontend chunks vs new server produce cryptic Next.js
     errors that look like backend failures. Rule: after any organ version
     change, test auth flows in incognito FIRST, then clear site data.
+
+### Session #13 cont. 9 — postiz browser signup STILL broken after cache
+### clear; delegated to session #14
+
+Leonard's incognito/clear-cache retry still fails with the router-state
+error → NOT purely stale cache; the v2.11.2 signup PAGE flow (RSC/server
+actions) itself is suspect, while raw API auth works (register/login
+proven again, provider must be "LOCAL" uppercase). Decision (Leonard):
+skip the UI — next session registers his account via API, mints the API
+key from the backend directly (key-minting endpoint not yet located;
+candidates: integrations/settings controllers), wires .env, runs S9.
+Full debug order + endpoint notes live in NEXT_SESSION_PROMPT.md postiz
+section. Probe account: probe@mjcx.test / ProbeTest123!.

@@ -66,12 +66,32 @@ do not redo it.
      within ±2% before ANY client go-live. Capture boss rules as a NEW v3
      JSON (keep price_visibility; agent_policy only if he chooses non-
      standard), swap PRICING_RULES, backtest via console, interpret misses.
-   - **Postiz channel connect** — FIXED 2026-08-26 (trap #42: backend was
-     dead behind a live frontend; now pinned v2.11.2, all processes
-     online). Leonard signs up FRESH at :13000 (the old signup never
-     persisted), connects channels, creates API key → `.env
-     POSTIZ_API_KEY` → restart glue → rerun
+   - **Postiz channel connect** — backend FIXED & PROVEN (trap #42: old
+     `latest` backend was dead behind a live frontend; now pinned v2.11.2,
+     all pm2 processes online). OPEN PROBLEM (Leonard delegated to this
+     session): **browser signup still fails** with Next.js "router state
+     header could not be parsed" even after cache clear — server-side auth
+     is NOT the problem:
+     * POST `/api/auth/register` {email,password,name,company,
+       provider:"LOCAL" ← UPPERCASE} → {"register":true} 200 ✓
+     * POST `/api/auth/login` same shape → {"login":true} 200 + cookie ✓
+     * Probe account already exists: probe@mjcx.test / ProbeTest123!
+     Debug order: (1) reproduce headlessly — hit the signup PAGE flow, check
+     whether the RSC/server-action path itself 500s on v2.11.2 (frontend
+     logs show the router-state throw during HIS attempts); (2) if it's the
+     Next skew bug, consider pinning a slightly different v2.11.x patch or
+     skipping the UI entirely; (3) LEONARD'S PREFERRED ROUTE: **bypass the
+     UI** — register his account via the API above, login (capture
+     Set-Cookie), then locate the API-key minting endpoint (look in
+     integrations.controller.js / settings.controller.js under
+     /app/apps/backend/dist/apps/backend/src/api/routes/ inside the
+     container — grep for key routes), mint `POSTIZ_API_KEY`, write `.env`
+     WITHOUT printing it, restart glue, rerun
      `tests/test_o5_s9_social.py --expect-scheduled`.
+     ⚠ scheduling still needs ONE connected channel (OAuth against the real
+     platform — LinkedIn/X app credentials or browser popup). That human
+     step may survive the UI problem since incognito might work for OAuth
+     even if the dashboard JS is broken — test before assuming.
    - **Phone drills**: S4 PDF-in-thread repeat; S10 live QR drop
      (`tests/test_o5_s10_qr_drill.py --execute`, <5 min).
 3. **CLOSE THE PITCH GAPS (the 3 sold products vs reality):**
