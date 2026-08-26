@@ -2082,3 +2082,30 @@ Gates after glue edits: e2e **13/13** · B4 **12/12** · S9 **5/5** · email
     debugging their SPA: check for header-based auth escapes
     (`req.headers.X || cookies.X`) before assuming a browser is required,
     and repoint OAuth callback bases (${FRONTEND_URL}) at surfaces WE serve.
+
+### Session #14 cont. 3 — LinkedIn connect debugging (three layers deep)
+
+Leonard's clicks failed three times for THREE different reasons, each
+invisible from our side until isolated:
+1. `client_id=undefined` in the OAuth url → LINKEDIN_CLIENT_ID not in postiz
+   env. Fixed: compose passes LINKEDIN_*/X_* through from .env (values only
+   ever in .env). GOTCHA: `docker compose -f compose/... up` does NOT read
+   ../.env by default — must pass `--env-file .env` (runbook §stamp already
+   did; ad-hoc recreations must too).
+2. `redirect_uri does not match` ×2 — partly a race: Leonard registered
+   `http://localhost:8090/integrations/social/linkedin` while I had
+   prematurely flipped FRONTEND_URL to port 80 ("LinkedIn dislikes custom
+   ports" — unproven, reverted). Lesson: when an external-registry mismatch
+   appears, diff THE ERROR PAGE'S OWN URL against the portal BEFORE changing
+   either side.
+3. `unauthorized_scope_error: w_organization_social` → postiz v2.11.2
+   hardcodes 7 scopes incl. org ones requiring the Community Management App
+   product (not yet on the app). Fix: repo patch file
+   `compose/postiz-patches/linkedin.provider.js` mounted RO over the dist
+   provider, scopes trimmed to openid/profile/w_member_social (member-posting
+   only). Company-page posting = later via linkedin_page channel once
+   Community Management is approved.
+
+State: consent URL now carries only authorized scopes + matching redirect;
+Leonard clicking Connect. Console callback page completes the handshake via
+glue `/console/social/finish/linkedin`.
