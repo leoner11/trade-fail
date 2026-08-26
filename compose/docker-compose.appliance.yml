@@ -211,6 +211,14 @@ services:
       REDIS_URL: redis://postiz-redis:6379
       BACKEND_URL: ${POSTIZ_PUBLIC_URL:-http://localhost:13000}
       NODE_ENV: production
+      # provider app creds (Leonard's human step — values live ONLY in ../.env;
+      # empty = console connect-url fails honestly instead of opening a popup
+      # that LinkedIn/X reject with "client id failed"). Callback URL to
+      # whitelist per app: http://localhost:8090/integrations/social/<platform>
+      LINKEDIN_CLIENT_ID: ${LINKEDIN_CLIENT_ID:-}
+      LINKEDIN_CLIENT_SECRET: ${LINKEDIN_CLIENT_SECRET:-}
+      X_API_KEY: ${X_API_KEY:-}
+      X_API_SECRET: ${X_API_SECRET:-}
     volumes:
       - postiz-config:/config/
       - postiz-uploads:/uploads/

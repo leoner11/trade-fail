@@ -1670,11 +1670,20 @@ async def console_social_connect_url(platform: str):
             _postiz_dash, "GET", f"/integrations/social/{platform}")
     except urllib.error.HTTPError as e:
         return {"err": f"postiz said {e.code}"}
-    if isinstance(res, dict) and res.get("url"):
-        return {"url": res["url"]}
-    # honest error: usually missing provider app creds inside postiz env
-    detail = res.get("err") or res.get("message") or res if isinstance(res, dict) else res
-    return {"err": f"no oauth url for {platform}: {str(detail)[:160]}"}
+    url = res.get("url") if isinstance(res, dict) else ""
+    if not url:
+        detail = res.get("err") or res.get("message") or res if isinstance(res, dict) else res
+        return {"err": f"no oauth url for {platform}: {str(detail)[:160]}"}
+    # honesty gate: a missing provider app id builds urls like
+    # client_id=undefined that the provider rejects AFTER the user clicks —
+    # fail HERE instead, with the fix spelled out
+    if "undefined" in url.split("?")[0] or "client_id=undefined" in url \
+            or "=undefined" in url:
+        upper = platform.upper()
+        return {"err": f"{platform} app credentials are missing inside postiz "
+                       f"(e.g. {upper}_CLIENT_ID / {upper}_CLIENT_SECRET in "
+                       f".env → recreate postiz)"}
+    return {"url": url}
 
 
 @app.post("/console/social/finish/{platform}")
