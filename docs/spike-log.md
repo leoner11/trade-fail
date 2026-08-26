@@ -2021,3 +2021,64 @@ first attempt hit a transient GLM SSL read-timeout, clean pass on rerun) ·
 console tsc/build clean + lint = the same 2 pre-existing warnings. Classify
 N/A (triage prompts untouched). DRY_RUN untouched by email gate (stubbed
 transport writes nothing to organs; spine rows are drill artifacts).
+
+### Session #14 cont. 2 — "login still doesn't work" → postiz goes HEADLESS
+### (Leonard's call: control it all from the console)
+
+Evidence first: nginx access log shows his Safari register AND login both
+returning **200** (07:13, twice) — auth works; the app then bounces him back
+to /auth. Cause: postiz sets the session cookie as
+`auth=…; Domain=localhost; Secure; HttpOnly; SameSite=None` — **Safari
+silently drops that on plain-http localhost** (single-label domain +
+Secure-over-http). Server-side he's logged in; his browser never keeps the
+session. Chrome-family would work; we don't care — see below.
+
+Decision (Leonard proposed it): postiz becomes a HEADLESS scheduling engine;
+the console owns the social surface — same architecture move as removing
+chatwoot in v1.2. Feasibility read straight from the compiled backend:
+- `auth.middleware`: session = `req.headers.auth || req.cookies.auth` →
+  header-auth works for EVERY dashboard endpoint.
+- OAuth start: `GET /api/integrations/social/:platform` → `{url}` (state +
+  PKCE verifier stashed in redis, 5-min TTL).
+- OAuth complete: `POST /api/integrations/social/:platform/connect`
+  {state, code, timezone} (ConnectIntegrationDto).
+- Callback target is `${FRONTEND_URL}/integrations/social/:platform` for
+  every provider checked (linkedin, x) → pointing FRONTEND_URL at OUR
+  console makes the consent popup land on US.
+
+Built:
+- compose postiz env: `NOT_SECURED=1` (cookie loses Secure/SameSite=None;
+  login ALSO returns the jwt in the `auth` response HEADER),
+  `FRONTEND_URL=http://localhost:8090` (= our stamp console). Recreated.
+- glue service account `_postiz_login()` (POSTIZ_EMAIL/POSTIZ_PASSWORD in
+  .env, jwt cached 23h) + `_postiz_dash()` helper w/ one-shot 403 retry.
+- glue bearer-gated endpoints: `/console/social/platforms` (.env
+  POSTIZ_PLATFORMS), `/console/social/channels` (GET integrations/list),
+  `/console/social/connect-url/{p}`, `/console/social/finish/{p}`
+  (relays callback params; injects timezone), `DELETE /console/social/
+  channels?id=`. Bogus-state probe returns postiz's own refusal honestly ✓.
+- console: SocialPage gains a Channels panel (connect buttons per platform,
+  live list, disconnect; popup-close polling refreshes); NEW route
+  `/integrations/social/:provider` OUTSIDE the authed shell =
+  SocialCallbackPage → relays params to glue → "Connected." + auto-close.
+
+Verified LIVE: platforms ✓ · channels [] via pure header-auth (no browser)
+✓ · connect-url generates a REAL LinkedIn OAuth url with
+`redirect_uri=http://localhost:8090/integrations/social/linkedin` (our
+console!) ✓ · finish-relay honest-failure path ✓. client_id=undefined until
+LINKEDIN_CLIENT_ID/SECRET (+X_API_KEY/SECRET) are set inside postiz env —
+that plus whitelisting `http://localhost:8090/integrations/social/<p>` as
+callback URL in each provider's developer app = Leonard's remaining steps.
+
+Gates after glue edits: e2e **13/13** · B4 **12/12** · S9 **5/5** · email
+**12/12** · voice **PASS** · console build/lint clean (same 2 warnings).
+
+### New trap
+
+45. **Organ UIs are replaceable — and sometimes unusable.** Postiz v2.11.2's
+    frontend cannot hold a session on Safari/http-localhost (Domain=
+    localhost+Secure cookie dropped). When an organ ships a usable API but a
+    broken/rarely-needed UI, drive it headless from OUR console instead of
+    debugging their SPA: check for header-based auth escapes
+    (`req.headers.X || cookies.X`) before assuming a browser is required,
+    and repoint OAuth callback bases (${FRONTEND_URL}) at surfaces WE serve.

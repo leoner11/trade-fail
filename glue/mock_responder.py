@@ -1582,6 +1582,144 @@ def _push_to_postiz(caption: str, hashtags: str, when: str) -> tuple[bool, str]:
         return False, str(e)[:160]
 
 
+# ------------------------------------ console social: postiz HEADLESS (X-v1) -
+# trap #45: postiz's own frontend is unusable on Safari (Domain=localhost +
+# Secure + SameSite=None cookie → dropped → login loop) and a second
+# dashboard is wrong for the appliance anyway. The session middleware
+# accepts the JWT from the `auth` HEADER, so glue drives the dashboard API
+# with a service-account login; OAuth consent popups open on the provider,
+# and the callback lands on OUR console (/integrations/social/:provider),
+# which relays params here to finish the connect.
+
+POSTIZ_DASH = f"{POSTIZ_URL}/api"
+_postiz_jwt_cache = {"jwt": "", "ts": 0.0}
+
+
+def _postiz_login() -> str:
+    email = cfg("POSTIZ_EMAIL", "")
+    pw = cfg("POSTIZ_PASSWORD", "")
+    if not (email and pw):
+        raise RuntimeError("postiz service account not configured "
+                           "(POSTIZ_EMAIL / POSTIZ_PASSWORD)")
+    now = time.time()
+    if _postiz_jwt_cache["jwt"] and now - _postiz_jwt_cache["ts"] < 23 * 3600:
+        return _postiz_jwt_cache["jwt"]
+    req = urllib.request.Request(
+        f"{POSTIZ_DASH}/auth/login",
+        data=json.dumps({"email": email, "password": pw,
+                         "provider": "LOCAL"}).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=15, context=_CTX) as r:
+        jwt = r.headers.get("auth") or ""
+        if not jwt:
+            sc = r.headers.get("Set-Cookie", "")
+            jwt = sc.split(";", 1)[0].split("=", 1)[1] \
+                if sc.startswith("auth=") else ""
+    if not jwt:
+        raise RuntimeError("postiz login returned no jwt")
+    _postiz_jwt_cache.update(jwt=jwt, ts=now)
+    return jwt
+
+
+def _postiz_dash(method: str, path: str, payload=None) -> dict:
+    """One dashboard-API call with header-auth; retries once on 403 (expired
+    jwt) after clearing the cache."""
+    def call():
+        body = json.dumps(payload).encode() if payload is not None else None
+        req = urllib.request.Request(
+            f"{POSTIZ_DASH}{path}", data=body, method=method,
+            headers={"auth": _postiz_login(),
+                     "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30, context=_CTX) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else {}
+    try:
+        return call()
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            _postiz_jwt_cache.update(jwt="", ts=0.0)
+            return call()
+        raise
+
+
+@app.get("/console/social/platforms")
+def console_social_platforms():
+    """Platforms offered on the console Connect buttons (client variation =
+    .env POSTIZ_PLATFORMS). Each needs its provider app creds inside postiz
+    (LINKEDIN_CLIENT_ID/SECRET, X_API_KEY/SECRET, ...) before the OAuth url
+    will generate."""
+    return {"platforms": [p.strip() for p in cfg(
+        "POSTIZ_PLATFORMS", POSTIZ_PLATFORM).split(",") if p.strip()]}
+
+
+@app.get("/console/social/channels")
+async def console_social_channels():
+    rows = await asyncio.to_thread(_postiz_dash, "GET", "/integrations/list")
+    items = rows if isinstance(rows, list) else rows.get("integrations", [])
+    out = [{"id": i.get("id"), "name": i.get("name"),
+            "platform": i.get("identifier"), "disabled": i.get("disabled"),
+            "picture": i.get("picture")}
+           for i in items if isinstance(i, dict)]
+    return {"channels": out}
+
+
+@app.get("/console/social/connect-url/{platform}")
+async def console_social_connect_url(platform: str):
+    try:
+        res = await asyncio.to_thread(
+            _postiz_dash, "GET", f"/integrations/social/{platform}")
+    except urllib.error.HTTPError as e:
+        return {"err": f"postiz said {e.code}"}
+    if isinstance(res, dict) and res.get("url"):
+        return {"url": res["url"]}
+    # honest error: usually missing provider app creds inside postiz env
+    detail = res.get("err") or res.get("message") or res if isinstance(res, dict) else res
+    return {"err": f"no oauth url for {platform}: {str(detail)[:160]}"}
+
+
+@app.post("/console/social/finish/{platform}")
+async def console_social_finish(platform: str, request: Request):
+    """OAuth callback relay: our console page forwards whatever query params
+    the provider appended; postiz matches `state` against the verifier it
+    stashed in redis when the connect-url was generated (5-min TTL)."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "body must be JSON")
+    state = (body.get("state") or body.get("oauth_token") or "").strip()
+    if not state:
+        raise HTTPException(400, "missing state/oauth_token in callback")
+    # ConnectIntegrationDto requires state+code+timezone strings (code is
+    # empty for OAuth1 providers like X — the verifier lives in redis)
+    payload = {"state": state, "code": str(body.get("code") or ""),
+               "timezone": cfg("POSTIZ_TIMEZONE", "Asia/Jakarta")}
+    for k in ("oauth_verifier", "shop", "instance_url"):
+        if body.get(k):
+            payload[k] = body[k]
+    try:
+        res = await asyncio.to_thread(
+            _postiz_dash, "POST",
+            f"/integrations/social/{platform}/connect", payload)
+    except urllib.error.HTTPError as e:
+        raise HTTPException(502, f"postiz connect failed: {e.code} "
+                                 f"{e.read()[:160]!r}")
+    err = res.get("err") if isinstance(res, dict) else None
+    if err:
+        raise HTTPException(502, f"postiz connect refused: {str(err)[:200]}")
+    await asyncio.to_thread(
+        _post, f"{SPINE_URL}/events",
+        {"kind": "social_channel_connected",
+         "detail_json": json.dumps({"platform": platform})}, timeout=10)
+    return {"ok": True, "detail": res}
+
+
+@app.delete("/console/social/channels")
+async def console_social_channel_delete(id: str):
+    res = await asyncio.to_thread(_postiz_dash, "DELETE", "/integrations/",
+                                  {"id": id})
+    return {"ok": True, "res": res}
+
+
 @app.post("/c/draft_tick")
 def c_draft_tick(count: int = 3):
     """C1+C2: pick catalog products without live posts, draft one

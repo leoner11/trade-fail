@@ -27,7 +27,7 @@ v1 = inquiry auto-response → quoting → social. The Bible: `WEAVE_PLAN.md`,
 | B5 human quote path | ✅ gaps hint lands in chatwoot w/ draft | glue escalate hooks |
 | B6 follow-up + APPROVE | ✅ n8n cron → drafts to staff WA → APPROVE sends | `n8n/workflows/`, `/b6/tick` |
 | SLA beacon (>2h unanswered) | ✅ boss WA nudges, once per conversation | `/a6/sla_tick` |
-| Phase C social | ✅ draft→boss card→APPROVE/REJECT→postiz push | `/c/draft_tick`, postiz :13000 |
+| Phase C social | ✅ **HEADLESS (#14)** — postiz = engine only; console Channels panel drives it via auth-header (trap #45: their UI unusable on Safari); OAuth callbacks land on OUR console | `/console/social/*`, SocialPage + callback route |
 | O1 stamp | ✅ compose validated + images build | `compose/docker-compose.appliance.yml` |
 | O5 acceptance | ✅ auto scenarios **10/10** incl. off-domain S8b | `tests/test_o5_acceptance.py` |
 | Voice layer | ✅ generated replies, digit/link/capability guards | voice_guide.md rules 1–8 |
@@ -79,12 +79,15 @@ STS-200): S1 catalog = S2 `pricing_rules.generators.json` = dify KB
 1. **Leonard soak + sign-offs (session #15 opener):**
    - Threads tab visual pass (:8090 now LIVE or :5173) → if happy, STOP the
      chatwoot containers (compose override; rollback proxies stay).
-   - Postiz: signup should work now (#14 fixed `NEXT_PUBLIC_BACKEND_URL`).
-     Owner account is ALREADY probe@mjcx.test / ProbeTest123! (SUPERADMIN,
-     key wired into .env). Connect ≥1 channel under THAT org (OAuth popup)
-     → rerun `tests/test_o5_s9_social.py --expect-scheduled`. If he wants
-     his own account instead: channels live per-org — re-point .env at his
-     org's key via login→`GET /api/user/self`→`publicApi`.
+   - Postiz: FORGET their frontend (trap #45 — Safari drops its session
+     cookie; register/login actually returned 200). Console → Social →
+     Channels: "Connect linkedin/x" opens the provider's consent popup and
+     the callback lands on our console. STILL NEEDS from Leonard:
+     provider app creds inside postiz env (LINKEDIN_CLIENT_ID/SECRET,
+     X_API_KEY/SECRET, …) + whitelisting
+     `http://localhost:8090/integrations/social/<platform>` as the callback
+     URL in each developer app. Then rerun
+     `tests/test_o5_s9_social.py --expect-scheduled`.
    - Phone drills: S4 PDF-in-thread repeat · S10 live QR drop
      (`tests/test_o5_s10_qr_drill.py --execute`).
    - SCOPE QUESTIONS for boss: (a) margin data model — cost field in S2

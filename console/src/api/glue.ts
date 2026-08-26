@@ -60,7 +60,35 @@ export interface GateLast {
   gate_pass?: boolean
 }
 
+// ---- social channels (postiz driven headlessly — trap #45) ----
+
+export interface SocialChannel {
+  id: string
+  name: string
+  platform: string
+  disabled?: boolean | null
+  picture?: string | null
+}
+
 export const glueApi = {
+  socialPlatforms: () =>
+    apiFetch<{ platforms: string[] }>('/glue/console/social/platforms'),
+  socialChannels: () =>
+    apiFetch<{ channels: SocialChannel[] }>('/glue/console/social/channels'),
+  socialConnectUrl: (platform: string) =>
+    apiFetch<{ url?: string; err?: string }>(
+      `/glue/console/social/connect-url/${encodeURIComponent(platform)}`,
+    ),
+  socialFinish: (platform: string, params: Record<string, string>) =>
+    apiFetch<{ ok: boolean }>(
+      `/glue/console/social/finish/${encodeURIComponent(platform)}`,
+      { method: 'POST', body: JSON.stringify(params) },
+    ),
+  socialDelete: (id: string) =>
+    apiFetch<{ ok: boolean }>(`/glue/console/social/channels?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+
   waStatus: () => apiFetch<WaStatus>('/glue/console/wa/status'),
   waQr: () => apiFetch<WaQr>('/glue/console/wa/qr'),
   waLogout: () =>

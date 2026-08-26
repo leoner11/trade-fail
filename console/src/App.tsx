@@ -7,6 +7,7 @@ import { ThreadsPage } from './pages/runtime/ThreadsPage'
 import { QuotesPage } from './pages/runtime/QuotesPage'
 import { CustomersPage } from './pages/runtime/CustomersPage'
 import { SocialPage } from './pages/runtime/SocialPage'
+import { SocialCallbackPage } from './pages/runtime/SocialCallbackPage'
 import { EventsPage } from './pages/runtime/EventsPage'
 import { ReportsPage } from './pages/runtime/ReportsPage'
 import { ConnectPage } from './pages/setup/ConnectPage'
@@ -45,7 +46,11 @@ export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
-        <Shell />
+        <Routes>
+          {/* OAuth callback landing — must work even without a console token */}
+          <Route path="/integrations/social/:provider" element={<SocialCallbackPage />} />
+          <Route path="/*" element={<Shell />} />
+        </Routes>
       </BrowserRouter>
     </AuthProvider>
   )
