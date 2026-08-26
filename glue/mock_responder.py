@@ -560,9 +560,13 @@ app = FastAPI(title="MJCX glue — mock Phase A router", version="0.1.0")
 @app.middleware("http")
 async def _console_auth(request: Request, call_next):
     """Bearer guard for the console surface ONLY. Empty CONSOLE_TOKEN = open
-    (dev). Everything else (buyer webhook, ticks, /health) stays as-is."""
+    (dev). Everything else (buyer webhook, ticks, /health) stays as-is.
+    EXCEPTION: /console/social/finish/* — the OAuth popup shares no
+    localStorage with the console tab, so there is no bearer to send; that
+    endpoint is guarded instead by postiz's single-use, 5-min-TTL state."""
     if CONSOLE_TOKEN and request.url.path.startswith("/console"):
-        if request.headers.get("authorization", "") != f"Bearer {CONSOLE_TOKEN}":
+        if not request.url.path.startswith("/console/social/finish/") and \
+                request.headers.get("authorization", "") != f"Bearer {CONSOLE_TOKEN}":
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
     return await call_next(request)
 
