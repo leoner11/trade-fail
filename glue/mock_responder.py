@@ -1562,19 +1562,21 @@ def _postiz_integrations() -> list:
 
 
 def _push_to_postiz(caption: str, hashtags: str, when: str,
-                    image: list | None = None) -> tuple[bool, str]:
-    """C4-1: create a scheduled post. Needs POSTIZ_API_KEY + at least one
-    connected {platform} channel; anything missing -> graceful skip.
+                    image: list | None = None,
+                    platform: str = "") -> tuple[bool, str]:
+    """C4-1: create a scheduled post. Needs POSTIZ_API_KEY + a connected
+    {platform} channel; anything missing -> graceful skip.
     Payload shape per v2.11.2 CreatePostDto (trap #46c): {type, shortLink,
     date, tags[], posts[{integration:{id}, value:[{content, image?}]}]}."""
     if not POSTIZ_API_KEY:
         return False, "POSTIZ_API_KEY not configured"
+    platform = platform or POSTIZ_PLATFORM
     try:
         integrations = _postiz_integrations()
         chan = next((i for i in integrations if isinstance(i, dict)
-                     and i.get("identifier") == POSTIZ_PLATFORM), None)
+                     and i.get("identifier") == platform), None)
         if not chan:
-            return False, f"no connected {POSTIZ_PLATFORM} channel yet"
+            return False, f"no connected {platform} channel yet"
         when = (when or "").strip()
         try:
             datetime.datetime.fromisoformat(when.replace("Z", "+00:00"))
@@ -1980,7 +1982,8 @@ def _approve_post(pid: str) -> str:
     _post(f"{SPINE_URL}/posts/{pid}/status", {"status": "approved"}, timeout=10)
     ok, detail = _push_to_postiz(row["caption"], row["hashtags"],
                                  row.get("scheduled_at") or "",
-                                 image=image_media or None)
+                                 image=image_media or None,
+                                 platform=row.get("platform") or "")
     if ok and detail and detail != "submitted":
         _post(f"{SPINE_URL}/posts/{pid}/publish",
               {"postiz_id": detail,

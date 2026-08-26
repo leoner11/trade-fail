@@ -364,6 +364,7 @@ class PostEditIn(BaseModel):
     caption: str | None = None
     hashtags: str | None = None
     scheduled_at: str | None = None
+    platform: str | None = None  # v1.5.1: target channel (linkedin | linkedin-page | x)
 
 
 @app.patch("/posts/{pid}")

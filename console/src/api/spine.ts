@@ -120,7 +120,7 @@ export const spine = {
   reportX5: (days: number) => apiFetch<X5Report>(`/spine/reports/x5?days=${days}`),
   editPost: (
     pid: string,
-    patch: { caption?: string; hashtags?: string; scheduled_at?: string },
+    patch: { caption?: string; hashtags?: string; scheduled_at?: string; platform?: string },
   ) =>
     apiFetch<{ ok: boolean; post: PostRow }>(`/spine/posts/${encodeURIComponent(pid)}`, {
       method: 'PATCH',

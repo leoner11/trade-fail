@@ -53,6 +53,8 @@ function DraftEditor({
   const [caption, setCaption] = useState(post.caption)
   const [hashtags, setHashtags] = useState(post.hashtags)
   const [schedule, setSchedule] = useState(post.scheduled_at ?? '')
+  const [platform, setPlatform] = useState(post.platform)
+  const platformsList = useAsync(() => glueApi.socialPlatforms(), [])
   const [images, setImages] = useState<string[]>(
     JSON.parse((post as unknown as { images_json?: string }).images_json ?? '[]'),
   )
@@ -84,7 +86,19 @@ function DraftEditor({
           className="mt-1 w-full rounded-md border border-line bg-surface-card p-2.5 text-body text-text-primary"
         />
       </div>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <div>
+          <label className="text-caption text-text-secondary">Post as (channel)</label>
+          <select
+            value={platform}
+            onChange={(e) => setPlatform(e.target.value)}
+            className="mt-1 w-full rounded-md border border-line bg-surface-card p-2.5 text-body text-text-primary"
+          >
+            {(platformsList.data?.platforms ?? [post.platform]).map((p) => (
+              <option key={p} value={p}>{p === 'linkedin' ? 'LinkedIn — personal profile' : p === 'linkedin-page' ? 'LinkedIn — company page' : p}</option>
+            ))}
+          </select>
+        </div>
         <div>
           <label className="text-caption text-text-secondary">Hashtags</label>
           <input
@@ -196,6 +210,7 @@ function DraftEditor({
                 caption,
                 hashtags,
                 scheduled_at: schedule || undefined,
+                platform: platform !== post.platform ? platform : undefined,
               })
               setMsg({ tone: 'ok', text: 'Saved — approve via WhatsApp (APPROVE ' + post.post_id + ')' })
               onSaved()
