@@ -71,7 +71,25 @@ do not redo it.
      `tests/test_o5_s9_social.py --expect-scheduled`.
    - **Phone drills**: S4 PDF-in-thread repeat; S10 live QR drop
      (`tests/test_o5_s10_qr_drill.py --execute`, <5 min).
-3. **Queued engineering polish (pick when no human input available):**
+3. **CLOSE THE PITCH GAPS (the 3 sold products vs reality):**
+   - **Email inquiry channel (v1-scope hole)** — IMAP poll (n8n cron or
+     glue loop) → normalize to the SAME glue route() path; replies go out
+     via email; escalations land in the same spine Threads store. Design
+     note first (mailbox config lives in .env per client).
+   - **X5 monthly report, full depth + delivery** — AI-answered vs
+     escalated counts, median response time, top asked products,
+     unanswerable questions (KB misses!), escalation-reason breakdown,
+     tier_change events; auto-send to BOSS on schedule (WhatsApp text or
+     PDF). "This report is why clients renew."
+   - Weekly boss digest (short stats version of the above).
+   - **Margin data model (scope decision — ask Leonard):** cost field in
+     S2 material rows → calc can compute margin at quote time (internal
+     only, X4); surfaces in X5 avg-margin stat. Needed for "knows your
+     margins" in the pitch.
+   - **Marketplace listings (scope decision — ask Leonard):** in v1 pitch
+     or phase 2? If v1: listing generator reuses social-draft machinery
+     per marketplace template.
+4. **Queued engineering polish (pick when idle):**
    - dify spec DSL fake-promise (#34): structured [NOT_FOUND]-style marker
      in the code node + RE-IMPORT cycle (find the import procedure used for
      a3_triage/spec_answer; update DIFY keys if the app id changes); gates
