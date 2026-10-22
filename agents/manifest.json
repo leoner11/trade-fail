@@ -1,0 +1,162 @@
+{
+  "$comment": "Agent manifests — platform plan Phase 1/2 (docs/modular-agent-platform-plan.md, flowchart v2 X6/O5). status: available = sellable today (its gate exists and is green); roadmap = NEVER sold until its gate exists (roadmap != menu). routes = glue /console prefixes the entitlement layer gates (base platform surfaces are never listed here). onboard = per-agent activation checklist (console License page, GoLive-gate pattern).",
+  "updated": "2026-09-08",
+  "agents": [
+    {
+      "id": "inquiry",
+      "tier": "market",
+      "status": "available",
+      "bundle": "sales-core",
+      "name_en": "Inquiry Auto-Response",
+      "name_zh": "询盘智能应答",
+      "routes": ["/console/voice"],
+      "gates": ["tests/test_o5_acceptance.py", "tests/test_classify.py"],
+      "onboard": [
+        "WhatsApp QR connected (Console → Connect)",
+        "Brand voice samples saved (Console → Voice)",
+        "O5 acceptance scenarios 1–8 pass on the test number"
+      ]
+    },
+    {
+      "id": "quoting",
+      "tier": "market",
+      "status": "available",
+      "bundle": "sales-core",
+      "name_en": "Quoting & Pricing",
+      "name_zh": "智能报价",
+      "routes": ["/console/pricing"],
+      "gates": ["calc/test_calculator.py", "tests/e2e_spike.py"],
+      "onboard": [
+        "S2 pricing rules loaded (Console → Pricing)",
+        "O3 backtest ≥ 90% on 10–20 REAL past quotes",
+        "Autonomy dial set (standard at go-live; gates pin it)"
+      ]
+    },
+    {
+      "id": "social",
+      "tier": "market",
+      "status": "available",
+      "bundle": null,
+      "name_en": "Social & Channel Ops",
+      "name_zh": "社媒与渠道运营",
+      "routes": ["/console/social"],
+      "gates": ["tests/test_o5_s9_social.py"],
+      "onboard": [
+        "Postiz API key set (.env POSTIZ_API_KEY)",
+        "Provider OAuth channel connected (Console → Social → Channels)",
+        "S9 social gate green (--expect-scheduled)"
+      ]
+    },
+    {
+      "id": "kb",
+      "tier": "market",
+      "status": "available",
+      "bundle": null,
+      "name_en": "Product Knowledge",
+      "name_zh": "产品百科",
+      "routes": ["/console/kb"],
+      "gates": ["tests/test_o2_quiz.py"],
+      "onboard": [
+        "Catalog imported (Console → Catalog)",
+        "KB docs ingested (Console → Knowledge)",
+        "O2 quiz ≥ 90%, zero fabricated answers",
+        "Gap report reviewed with the client"
+      ]
+    },
+    {
+      "id": "docgen",
+      "tier": "ops",
+      "status": "available",
+      "bundle": null,
+      "name_en": "Document Generation",
+      "name_zh": "智能文件",
+      "routes": ["/console/docgen"],
+      "gates": ["tests/test_b4.py", "tests/test_docgen.py"],
+      "onboard": [
+        "Client branding in the carbone quote template",
+        "B4 PDF render test green (tests/test_b4.py)"
+      ]
+    },
+    {
+      "id": "customer-knowledge",
+      "tier": "ops",
+      "status": "available",
+      "bundle": null,
+      "name_en": "Customer Knowledge",
+      "name_zh": "客户记忆",
+      "routes": ["/console/customers-facts"],
+      "gates": ["tests/test_customer_knowledge.py"],
+      "onboard": [
+        "Customer known to S3 (import or first conversation auto-resolve)",
+        "Facts + brief visible (Console → Customers → Customer Knowledge)",
+        "Brief spot-check: every line cites a spine row"
+      ]
+    },
+    {
+      "id": "sop",
+      "tier": "ops",
+      "status": "roadmap",
+      "bundle": null,
+      "name_en": "SOP & Process Guide",
+      "name_zh": "操作指引",
+      "routes": ["/console/sop"],
+      "gates": [],
+      "onboard": []
+    },
+    {
+      "id": "meeting-intel",
+      "tier": "ops",
+      "status": "roadmap",
+      "bundle": null,
+      "name_en": "Meeting & Voice Intelligence",
+      "name_zh": "会议与沟通助手",
+      "routes": ["/console/meetings"],
+      "gates": [],
+      "onboard": []
+    },
+    {
+      "id": "supplier",
+      "tier": "ops",
+      "status": "available",
+      "bundle": null,
+      "name_en": "Supplier & Procurement",
+      "name_zh": "采购协同",
+      "routes": ["/console/procurement"],
+      "gates": ["tests/test_procurement.py"],
+      "onboard": [
+        "First 5 suppliers registered with terms + lead times (Console → Procurement)",
+        "Cost fields mirrored into S2 so calc computes real margin",
+        "BOSS WhatsApp set for delay flags (n8n age check)"
+      ]
+    },
+    {
+      "id": "market-intel",
+      "tier": "market",
+      "status": "available",
+      "bundle": null,
+      "name_en": "Market Intelligence",
+      "name_zh": "市场情报",
+      "routes": ["/console/intel"],
+      "gates": ["tests/test_intel_digest.py"],
+      "onboard": [
+        "Feed list configured (agents/feeds.json)",
+        "POST /console/intel/fetch returns new items",
+        "Digest arrives on boss WhatsApp with [I<id>] citations"
+      ]
+    },
+    {
+      "id": "positioning",
+      "tier": "market",
+      "status": "available",
+      "bundle": null,
+      "name_en": "Marketplace & Positioning",
+      "name_zh": "选品与市场定位",
+      "routes": ["/console/positioning"],
+      "gates": ["tests/test_positioning.py"],
+      "onboard": [
+        "Category + listings analyzed (Console → Positioning)",
+        "Memo reviewed; catalog drafts approved into S1"
+      ]
+    }
+  ]
+}

@@ -34,6 +34,36 @@ export const TIER_TONE: Record<string, Tone> = {
   distributor: 'special',
 }
 
+export type POStatus =
+  | 'draft'
+  | 'approved'
+  | 'sent'
+  | 'confirmed'
+  | 'shipped'
+  | 'received'
+  | 'cancelled'
+
+export const PO_TONE: Record<POStatus, Tone> = {
+  draft: 'neutral',
+  approved: 'info',
+  sent: 'info',
+  confirmed: 'special',
+  shipped: 'special',
+  received: 'success',
+  cancelled: 'danger',
+}
+
+export const INTEL_TONE: Record<string, Tone> = {
+  news: 'neutral',
+  tariff: 'attention',
+  price_watch: 'special',
+}
+
+export const CATALOG_TONE: Record<string, Tone> = {
+  proposed: 'attention',
+  live: 'success',
+}
+
 export const GATE_LABELS: Record<string, string> = {
   escalation: 'Escalation',
   sla_beacon: 'SLA beacon',

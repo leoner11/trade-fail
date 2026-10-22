@@ -11,14 +11,19 @@ import {
   Megaphone,
   MessageSquare,
   Mic,
+  Newspaper,
   QrCode,
   Rocket,
+  Shield,
+  Truck,
+  TrendingUp,
   Users,
 } from 'lucide-react'
 import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { spine } from '../../api/spine'
+import { licenseApi } from '../../api/glue'
 import { useAuth } from '../../auth/AuthContext'
 import { T } from '../../i18n/en'
 import { usePoll } from '../../lib/usePoll'
@@ -27,15 +32,18 @@ interface NavDef {
   to: string
   label: string
   icon: typeof Activity
+  /** entitlement id — nav hidden when the license doesn't cover it */
+  agent?: string
 }
 
 const SETUP_NAV: NavDef[] = [
   { to: '/connect', label: T.nav.connect, icon: QrCode },
   { to: '/catalog', label: T.nav.catalog, icon: BookOpen },
-  { to: '/knowledge', label: T.nav.knowledge, icon: Library },
-  { to: '/pricing', label: T.nav.pricing, icon: Calculator },
+  { to: '/knowledge', label: T.nav.knowledge, icon: Library, agent: 'kb' },
+  { to: '/pricing', label: T.nav.pricing, icon: Calculator, agent: 'quoting' },
   { to: '/voice', label: T.nav.voice, icon: Mic },
   { to: '/go-live', label: T.nav.goLive, icon: Rocket },
+  { to: '/license', label: T.nav.license, icon: Shield },
 ]
 
 const RUNTIME_NAV: NavDef[] = [
@@ -43,7 +51,10 @@ const RUNTIME_NAV: NavDef[] = [
   { to: '/inbox', label: T.nav.inbox, icon: MessageSquare },
   { to: '/quotes', label: T.nav.quotes, icon: FileText },
   { to: '/customers', label: T.nav.customers, icon: Users },
-  { to: '/social', label: T.nav.social, icon: Megaphone },
+  { to: '/positioning', label: T.nav.positioning, icon: TrendingUp, agent: 'positioning' },
+  { to: '/intel', label: T.nav.intel, icon: Newspaper, agent: 'market-intel' },
+  { to: '/procurement', label: T.nav.procurement, icon: Truck, agent: 'supplier' },
+  { to: '/social', label: T.nav.social, icon: Megaphone, agent: 'social' },
   { to: '/events', label: T.nav.events, icon: Activity },
   { to: '/reports', label: T.nav.reports, icon: BarChart3 },
 ]
@@ -136,6 +147,19 @@ export function AppLayout({ children }: { children: ReactNode }) {
   // v1.2: pending escalations in the spine store, not chatwoot unread.
   const threads = usePoll(() => spine.listThreads('open'), 30_000)
   const unread = (threads.data?.items ?? []).filter((c) => c.escalation_tag).length
+  // Phase 1: entitlement-aware nav — hide agents the license doesn't cover.
+  // Fail-open display; the server still enforces (glue 403, spine untouched).
+  const license = usePoll(() => licenseApi.state(), 30_000)
+  const licAgents = license.data?.agents ?? []
+  const licMode = license.data?.mode ?? 'open'
+  const visible = (items: NavDef[]) =>
+    items.filter(
+      (d) =>
+        !d.agent ||
+        licMode !== 'licensed' ||
+        licAgents.includes('*') ||
+        licAgents.includes(d.agent),
+    )
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -154,14 +178,14 @@ export function AppLayout({ children }: { children: ReactNode }) {
               <span className="truncate text-card font-semibold text-white">Appliance</span>
             )}
           </div>
-          <RailGroup label={T.nav.setup} items={SETUP_NAV} collapsed={collapsed} />
-          <RailGroup label={T.nav.runtime} items={RUNTIME_NAV} collapsed={collapsed}
+          <RailGroup label={T.nav.setup} items={visible(SETUP_NAV)} collapsed={collapsed} />
+          <RailGroup label={T.nav.runtime} items={visible(RUNTIME_NAV)} collapsed={collapsed}
             attentionFor={unread > 0 ? '/inbox' : undefined} />
         </div>
         <div className="px-2 pt-2">
           <button
             onClick={() => setCollapsed((c) => !c)}
-            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-label="Collapse sidebar"
             title={collapsed ? 'Expand' : 'Collapse'}
             className={`flex h-9 w-full items-center gap-3 rounded-md text-rail-text transition-colors hover:bg-rail-hover hover:text-white ${
               collapsed ? 'justify-center px-0' : 'px-3'

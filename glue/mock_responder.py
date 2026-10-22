@@ -52,6 +52,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import xml.etree.ElementTree as ET
 from datetime import date
 from email.message import EmailMessage
 from email.parser import BytesParser
@@ -61,6 +62,8 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel  # Doc-Gen / entitlement request bodies
+from entitlement import enabled_for_path, license_state  # Phase 1 license layer
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -101,6 +104,8 @@ CHATWOOT_ENABLED = cfg("CHATWOOT_ENABLED", "0") == "1"
 # a conversation human-handled.
 CW_ADMIN_TOKEN = cfg("CHATWOOT_ADMIN_TOKEN", "")
 CW_INBOX_NAME = cfg("CHATWOOT_INBOX_NAME", "")
+# ⊞ Customer Knowledge (platform plan Phase 3): agent memory capture on/off.
+KNOWLEDGE_CAPTURE = cfg("KNOWLEDGE_CAPTURE", "1") == "1"
 CARBONE_URL = cfg("CARBONE_URL", "http://localhost:8200").rstrip("/")
 SOFFICE = cfg("SOFFICE_PATH", "/Applications/LibreOffice.app/Contents/MacOS/soffice")
 QUOTE_TEMPLATE = ROOT / "spine" / "templates" / "quote_template.docx"
@@ -239,8 +244,18 @@ _CAPABILITY_RES = [
     r"\bwhat\s+(products?|range|lines?)\s+(do|you|have|sell)\b",
     r"\bwho\s+are\s+(you|u)\b",
     r"\bwhat\s+(company|business)\s+is\s+this\b",
+    # "tell me more bout ur industry" (live 2026-08-26 23:20): buyers say
+    # 'bout'/'ur' and ask about the INDUSTRY/company, not "what do you
+    # sell". Classifier reads these OTHER conf 0.85 -> human flag for a
+    # question the S1 company line fully answers.
+    r"\b(tell|talk)\s+me\s+(more\s+)?(about|bout)\s+"
+    r"((ur|your|the|this)\s+)?(industry|business|company|factory|field)\b",
+    r"\bwhat\s+industry\s+(are|r)\s+(you|u)\s+in\b",
+    r"\b(what|which)\s+(industry|sector|field)\s+(are|r|do|is)\b",
     r"你们?(是做什么|做什么的|是干什么的|卖什么|主营|有哪些?产品|生产什么|经营什么|是什么公司)",
     r"\bapa\s+(yang\s+)?(anda|kalian|perusahaan)\s+(jual|buat|produksi)\b",
+    r"你们?(是)?(什么|哪个)?(行业|产业)|做什么行业",
+    r"\bindustri\s+apa\b",
 ]
 
 # Pure-agreement messages ("yes please", 好的, ya) answering OUR OWN offer.
@@ -293,6 +308,34 @@ _AVAILABILITY_RES = [
     r"(有没|有没有|有没有卖|有卖|卖不卖|做不做|能不能做|能做吗|生产吗|供应吗|有没有这)",
 ]
 
+# Catalog-LINE questions ("what models are there?"): the full answer is the
+# S1 model list itself — deterministic, zero hallucination surface. Without
+# this gate they fall into RAG, which stalls on the overview phrasing and
+# dead-ends the thread into a spec_stub + human flag for something S1
+# answers outright (live test 2026-08-26 22:34). Plural/collective forms
+# only — "what model of engine do you use" stays on the normal spec paths.
+_MODEL_LINE_RES = [
+    r"\b(what|which)\s+models?\s+(do\s+you|are|have|is|does)\b",
+    r"\bwhat\s+(products?|gensets?|generators?|units?)\s+"
+    r"(do\s+you\s+)?(have|got|carry|sell|make|offer)\b",
+    r"\b(list|show|send)\s+(me\s+)?(all\s+)?(your\s+)?(the\s+)?"
+    r"(models?|products?|catalog(ue)?|range)\b",
+    r"\b(model|product)\s+(list|lineup|range)\b",
+    r"有哪些?型号|什么型号|型号(列表|都有|有哪些?)",
+    r"\bmodel\s+apa\s+saja\b",
+]
+
+# Follow-up "give me the details" asks that carry no product reference —
+# resolved against the thread's last discussed SKU (narrow on purpose:
+# "what's the warranty?" stays on RAG, it is not a details-follow-up).
+_DETAIL_FOLLOWUP_RES = [
+    r"\b(details?|specifications?|specs?)\b",
+    r"\btell\s+me\s+more\b",
+    r"\bmore\s+(info|information|details?)\b",
+    r"\bwhat\s+else\b",
+    r"(详细介绍|规格参数|详细参数|细节)",
+]
+
 
 def _match_any(text: str, patterns: list[str]) -> bool:
     return any(re.search(p, text, re.I) for p in patterns)
@@ -322,6 +365,23 @@ def _catalog_alias_rows() -> list[dict]:
         return items.get("items") if isinstance(items, dict) else (items or [])
     except Exception:
         return []
+
+
+# Exact SKU token ("DG-30", "dg 30", "ats50" ...). Buyers rarely type the
+# hyphen (live 2026-08-26 22:51: "30 kva is dg 30" missed the catalog and
+# fell to RAG, arming a weak prose offer). Single source for the pricing
+# continuation guard, the SPEC_Q fast path, and the bare-SKU rescue below.
+_SKU_RE = re.compile(r"\b(DG[- ]?\d+|ATS[- ]?\d+|STS[- ]?\d+)\b", re.I)
+
+
+def _sku_norm(tok: str) -> str:
+    return re.sub(r"^([A-Za-z]+)[ -]?(\d+)$", r"\1-\2", tok.strip()).upper()
+
+
+def _sku_token(text: str) -> str | None:
+    """Normalized SKU mentioned in the text, or None ('dg 30' -> 'DG-30')."""
+    m = _SKU_RE.search(text)
+    return _sku_norm(m.group(1)) if m else None
 
 
 def _alias_sku(text: str) -> str | None:
@@ -379,7 +439,10 @@ def _looks_like_stall(rag_text: str) -> bool:
 
 def _catalog_reply(item: dict, lang: str, text: str, remote: str) -> str:
     """Deterministic S1 answer for one SKU: generated weave over the facts,
-    static fallback otherwise. Arms offer-fulfillment state."""
+    static fallback otherwise. Arms offer-fulfillment state + leaves a
+    last_sku breadcrumb so follow-ups ("i want the details") resolve to
+    this product without the buyer repeating it."""
+    _THREAD.setdefault(remote, {})["last_sku"] = item["sku"]
     facts = [f"{item['name']} ({item['sku']})"] + [
         f"{k}: {v}" for k, v in item["specs"].items()]
     if item.get("moq"):
@@ -569,7 +632,421 @@ async def _console_auth(request: Request, call_next):
         if not request.url.path.startswith("/console/social/finish/") and \
                 request.headers.get("authorization", "") != f"Bearer {CONSOLE_TOKEN}":
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
+    # Phase 1 entitlement gate (flowchart ⊞): licensed agent surfaces only.
+    # Base console surfaces + /console/license self-read stay open to
+    # authed callers; spine is never touched by this layer.
+    if request.url.path.startswith("/console"):
+        ok, agent = enabled_for_path(request.url.path)
+        if not ok:
+            return JSONResponse(
+                {"detail": f"not in your plan: {agent} (contact MJCX)"},
+                status_code=403)
     return await call_next(request)
+
+
+@app.get("/console/license")
+async def console_license():
+    """Entitlement state for the Console License page. Always readable by
+    console-authed callers (never plan-gated itself) so the UI can render
+    its own plan state; the bearer guard above still applies."""
+    return license_state()
+
+
+DOCTEMPLATES = {
+    "invoice": ("invoice_template.docx", "Invoice"),
+    "packing_list": ("packing_list_template.docx", "Packing List"),
+    "proforma": ("proforma_template.docx", "Proforma Invoice"),
+}
+
+
+class DocGenIn(BaseModel):
+    kind: str
+    quote_id: str
+    doc_id: str = ""
+
+
+def _quote_lines_text(q: dict) -> str:
+    """Human-readable line items, straight from calc's own facts output —
+    the LLM never writes these (numbers stay calc's)."""
+    res = q.get("result_json") or {}
+    facts = res.get("facts")
+    if isinstance(facts, list) and facts:
+        return "\n".join(str(x) for x in facts[:12])
+    return json.dumps(q.get("request_json") or {}, ensure_ascii=False)[:800]
+
+
+@app.post("/console/docgen/render")
+async def docgen_render(inp: DocGenIn):
+    """⊞ Doc-Gen bundle: render invoice / packing list / proforma from a
+    saved S5 quote via carbone. Templates: spine/templates (regenerate via
+    scripts/make_doctemplates.py). Audited to S8."""
+    if inp.kind not in DOCTEMPLATES:
+        raise HTTPException(400, f"unknown kind {inp.kind} "
+                                 f"(known: {sorted(DOCTEMPLATES)})")
+    tpl_name, _label = DOCTEMPLATES[inp.kind]
+    tpl_path = ROOT / "spine" / "templates" / tpl_name
+    if not tpl_path.exists():
+        raise HTTPException(500, f"template missing: {tpl_name} "
+                                 f"(run scripts/make_doctemplates.py)")
+    try:
+        q = _get(f"{SPINE_URL}/quotes/{inp.quote_id}")
+    except Exception as e:
+        raise HTTPException(404, f"quote fetch failed: {e}")
+    doc_id = inp.doc_id or f"{inp.kind[:3].upper()}-{inp.quote_id}"
+    data = {
+        "doc_id": doc_id,
+        "kind": DOCTEMPLATES[inp.kind][1],
+        "date": datetime.date.today().isoformat(),
+        "quote_id": inp.quote_id,
+        "customer_name": q.get("customer_name") or q.get("customer_id")
+                         or "customer",
+        "total": q.get("total"),
+        "currency": q.get("currency") or "USD",
+        "valid_until": (q.get("result_json") or {}).get("valid_until", ""),
+        "lines_text": _quote_lines_text(q),
+    }
+    try:
+        doc = await asyncio.to_thread(
+            _carbone_doc, data, tpl_path, tpl_name)
+    except Exception as e:
+        raise HTTPException(503, f"carbone render failed: {e}")
+    try:
+        await asyncio.to_thread(
+            _post, f"{SPINE_URL}/events",
+            {"kind": "docgen_rendered",
+             "detail_json": json.dumps({"doc_id": doc_id, "kind": inp.kind,
+                                        "quote_id": inp.quote_id})})
+    except Exception as e:
+        print(f"[docgen] S8 log skipped ({e})", flush=True)
+    import base64
+    return {"ok": True, "doc_id": doc_id, "kind": inp.kind,
+            "filename": f"{doc_id}.docx",
+            "docx_base64": base64.b64encode(doc).decode()}
+
+
+_MANIFEST: list[dict] | None = None
+
+
+def _manifest_agents() -> list[dict]:
+    """agents/manifest.json, loaded once (Phase 2 packaging)."""
+    global _MANIFEST
+    if _MANIFEST is None:
+        try:
+            p = ROOT / "agents" / "manifest.json"
+            _MANIFEST = json.loads(p.read_text()).get("agents", [])
+        except Exception:
+            _MANIFEST = []
+    return _MANIFEST
+
+
+@app.get("/console/agents")
+async def console_agents():
+    """Phase 2: agent catalog + per-agent license state for the Console
+    License page. Base-platform surfaces are never listed here. licensed:
+    true/false when a plan is active; null in open mode (license irrelevant)."""
+    st = license_state()
+    licensed = set(st.get("agents") or [])
+    wildcard = "*" in licensed
+    rows = []
+    for a in _manifest_agents():
+        lic = None
+        if st.get("licensed"):
+            lic = wildcard or a["id"] in licensed
+        rows.append({
+            "id": a["id"],
+            "name_en": a.get("name_en", a["id"]),
+            "name_zh": a.get("name_zh", ""),
+            "tier": a.get("tier", ""),
+            "status": a.get("status", "roadmap"),
+            "bundle": a.get("bundle"),
+            "licensed": lic,
+            "onboard": a.get("onboard", []),
+        })
+    return {"mode": st.get("mode"), "agents": rows}
+
+
+
+def _intel_feeds() -> list[str]:
+    """Feed list is config-as-code (S7): agents/feeds.json."""
+    try:
+        return json.loads((ROOT / "agents" / "feeds.json").read_text()).get("feeds", [])
+    except Exception:
+        return []
+
+
+def _parse_feed(xml_bytes: bytes) -> list[dict]:
+    """Minimal RSS/Atom title+link extraction (stdlib)."""
+    root = ET.fromstring(xml_bytes)
+    items = []
+    for item in root.iter():
+        tag = item.tag.rsplit("}", 1)[-1]
+        if tag not in ("item", "entry"):
+            continue
+        title = link = ""
+        for child in item:
+            ctag = child.tag.rsplit("}", 1)[-1]
+            if ctag == "title" and child.text:
+                title = child.text.strip()
+            if ctag == "link":
+                link = (child.get("href") or child.text or "").strip()
+        if title or link:
+            items.append({"title": title, "url": link})
+    return items
+
+
+@app.post("/console/intel/fetch")
+async def intel_fetch():
+    """⊞ Market Intelligence: pull configured feeds → S9 (url-deduped)."""
+    import urllib.parse
+    new = fetched = 0
+    for feed in _intel_feeds():
+        try:
+            with urllib.request.urlopen(feed, timeout=15, context=_CTX) as r:
+                raw = r.read()
+        except Exception as e:
+            print(f"[intel] feed failed {feed}: {e}", flush=True)
+            continue
+        fetched += 1
+        try:
+            entries = _parse_feed(raw)
+        except Exception as e:
+            print(f"[intel] parse failed {feed}: {e}", flush=True)
+            continue
+        for e in entries[:30]:
+            try:
+                res = await asyncio.to_thread(
+                    _post, f"{SPINE_URL}/intel/items",
+                    {"source": feed, "url": e["url"], "title": e["title"],
+                     "kind": "news"})
+                new += 0 if res.get("duplicate") else 1
+            except Exception:
+                pass
+    return {"feeds": fetched, "new_items": new}
+
+
+def _compose_digest(items: list[dict]) -> tuple[str, list[int]]:
+    """Deterministic digest: one line per item, citing intel_item ids."""
+    lines, cited = [], []
+    for it in items[:20]:
+        lines.append(f"[I{it['id']}] {it['title'] or it['url']} ({it['source']})")
+        cited.append(it["id"])
+    return "\n".join(lines), cited
+
+
+@app.get("/console/intel/digest")
+async def intel_digest(hours: int = 24):
+    """⊞ Boss digest: latest S9 items → GLM summary that MUST cite item ids.
+    GLM down → deterministic lines. Never fabricates: ids are the contract."""
+    recent = _get(f"{SPINE_URL}/intel/items?limit=30").get("items", [])
+    det_text, cited = _compose_digest(recent)
+    if not recent:
+        return {"digest": "No intel items in this window.", "item_ids": [],
+                "mode": "deterministic"}
+    mode = "deterministic"
+    digest = det_text
+    if not DRY_RUN:
+        try:
+            sys_prompt = (
+                "Summarize these market-intelligence items for a trading "
+                'company boss. Output JSON: {"digest": "<=10 lines, every '
+                'claim citing items as [I<id>]"}. Cover price signals, '
+                "tariff/regulatory changes, and demand shifts. Only cite "
+                "items that exist.")
+            rows = [{"id": f"I{it['id']}", "title": it.get("title", ""),
+                     "summary": (it.get("summary") or "")[:200],
+                     "source": it.get("source", "")} for it in recent[:20]]
+            out = glm(sys_prompt, json.dumps(rows, ensure_ascii=False))
+            text = (out.get("digest") or "").strip()
+            if text:
+                import re as _re
+                known = {it["id"] for it in recent}
+                over = [int(tok) for tok in _re.findall(r"\[I(\d+)\]", text)
+                        if int(tok) not in known]
+                if over:
+                    print(f"[intel] digest rejected: unknown citations "
+                          f"{over[:3]}", flush=True)
+                else:
+                    digest, mode = text, "glm"
+        except Exception as e:
+            print(f"[intel] glm digest failed -> deterministic: {e}",
+                  flush=True)
+    return {"digest": digest, "item_ids": cited, "mode": mode}
+
+
+class IntelWatch(BaseModel):
+    url: str = ""
+    title: str = ""
+    value: str = ""
+    source: str = "changedetection"
+
+
+@app.post("/console/intel/watch")
+async def intel_watch(inp: IntelWatch):
+    """⊞ changedetection.io webhook → S9 + boss WhatsApp alert. The echoed
+    value is stored verbatim — no interpretation at the door."""
+    await asyncio.to_thread(
+        _post, f"{SPINE_URL}/intel/items",
+        {"source": inp.source, "url": inp.url, "title": inp.title,
+         "summary": inp.value, "kind": "price_watch"})
+    boss = BOSS_WHATSAPP
+    if boss:
+        try:
+            send_text(boss, f"[intel] {inp.title}\n{inp.url}"
+                      + (f"\nvalue: {inp.value}" if inp.value else ""))
+        except Exception as e:
+            print(f"[intel] boss nudge failed: {e}", flush=True)
+    return {"ok": True}
+
+
+class PositioningIn(BaseModel):
+    category: str
+    listings: list[dict]  # [{title, price?, url?, notes?}] — pasted/exported
+
+
+@app.post("/console/positioning/analyze")
+async def positioning_analyze(inp: PositioningIn):
+    """⊞ Positioning: LLM analyzes pasted listings → memo + catalog drafts.
+    Prices stay as given (no arithmetic on the LLM path); every memo claim
+    must cite [L<n>] listing indices. Memo persisted under data/positioning/,
+    pointer in S8."""
+    if not inp.listings:
+        raise HTTPException(400, "listings required (paste or export rows)")
+    lst = []
+    for i, l in enumerate(inp.listings[:40], 1):
+        lst.append({"idx": f"L{i}", "title": str(l.get("title", ""))[:200],
+                    "price": l.get("price"),
+                    "notes": str(l.get("notes", ""))[:200]})
+    prices = sorted(float(l["price"]) for l in lst
+                    if isinstance(l.get("price"), (int, float)))
+    det = {"category": inp.category, "listings": len(lst),
+           "price_band": ({"min": prices[0], "max": prices[-1],
+                           "median": prices[len(prices) // 2]}
+                          if prices else None)}
+    memo, drafts = "", []
+    if not DRY_RUN:
+        try:
+            sys_prompt = (
+                "Analyze these marketplace listings for a trading company. "
+                'Output JSON: {"memo": "<=10 lines citing listings as '
+                '[L1]..[Ln] for every claim", "drafts": [{"sku": '
+                '"SUGGESTED-SKU", "name": "...", "specs": {"k": "v"}, '
+                '"moq": 1}]}. The memo must cover price bands, winning '
+                "feature language, and unmet complaints (= product "
+                "opportunities). Only cite listings that exist.")
+            out = glm(sys_prompt, json.dumps(lst, ensure_ascii=False))
+            memo = (out.get("memo") or "").strip()
+            drafts = out.get("drafts") or []
+        except Exception as e:
+            print(f"[pos] glm analyze failed -> deterministic: {e}",
+                  flush=True)
+    if not memo:
+        memo = (f"Category: {inp.category} — {len(lst)} listings. "
+                f"Price band: {det['price_band']}. Add GLM for narrative "
+                f"analysis (currently deterministic).")
+    import re as _re
+    over = [int(tok) for tok in _re.findall(r"\[L(\d+)\]", memo)
+            if int(tok) > len(lst)]
+    if over:
+        memo = (f"analysis rejected: citations {over[:3]} exceed listing "
+                f"count — rerun with fewer claims.")
+        drafts = []
+    memo_path = ROOT / "data" / "positioning" / (
+        f"{inp.category.replace(' ', '_')}-{int(time.time())}.md")
+    try:
+        memo_path.parent.mkdir(parents=True, exist_ok=True)
+        memo_path.write_text(memo + "\n\n" + json.dumps(
+            lst, indent=1, ensure_ascii=False))
+        await asyncio.to_thread(
+            _post, f"{SPINE_URL}/events",
+            {"kind": "positioning_analyzed",
+             "detail_json": json.dumps({"category": inp.category,
+                                        "memo_path": str(memo_path),
+                                        "listings": len(lst)})})
+    except Exception as e:
+        print(f"[pos] persist skipped: {e}", flush=True)
+    return {"memo": memo, "drafts": drafts, "price_band": det["price_band"],
+            "memo_path": str(memo_path)}
+
+
+class PositioningPromote(BaseModel):
+    drafts: list[dict]  # [{sku, name, category?, specs?, moq?}]
+
+
+@app.post("/console/positioning/promote")
+async def positioning_promote(inp: PositioningPromote):
+    """Push drafts into S1 as PROPOSED — staff approve (spine
+    /catalog/{sku}/approve) before they are quotable."""
+    out = []
+    for d in inp.drafts[:20]:
+        res = await asyncio.to_thread(
+            _post, f"{SPINE_URL}/catalog/draft",
+            {"sku": d.get("sku"), "name": d.get("name"),
+             "category": d.get("category", ""),
+             "specs": d.get("specs", {}), "moq": d.get("moq", 0)})
+        out.append({"sku": d.get("sku"), "status": "proposed"})
+    await asyncio.to_thread(
+        _post, f"{SPINE_URL}/events",
+        {"kind": "positioning_promoted",
+         "detail_json": json.dumps({"count": len(out)})})
+    return {"promoted": out}
+
+
+@app.get("/console/customers-facts/brief/{cid}")
+async def console_customer_brief(cid: str):
+    """⊞ Customer Knowledge: pre-takeover brief. GLM summarizes spine rows;
+    deterministic fallback assembles the same facts without an LLM. The
+    model may only restate provided rows — never add knowledge."""
+    import urllib.parse
+    try:
+        customer = _get(f"{SPINE_URL}/customers/{cid}")
+    except Exception as e:
+        raise HTTPException(404, f"customer fetch failed: {e}")
+    facts = _get(f"{SPINE_URL}/customers/{cid}/facts").get("items", [])
+    quotes = [q for q in _get(f"{SPINE_URL}/quotes?limit=50").get("items", [])
+              if q.get("customer_id") == cid]
+    messages = []
+    jid = customer.get("wa_jid") or ""
+    if jid:
+        try:
+            convo = _get(f"{SPINE_URL}/conversations/by_jid/"
+                         f"{urllib.parse.quote(jid)}")
+            if convo.get("conversation_id"):
+                messages = _get(f"{SPINE_URL}/conversations/"
+                                f"{convo['conversation_id']}/messages"
+                                f"?limit=10").get("items", [])
+        except Exception:
+            messages = []
+    rows = {"customer": {k: customer.get(k) for k in
+                         ("customer_id", "name", "tier", "language",
+                          "country", "notes")},
+            "facts": [f["fact"] for f in facts],
+            "quotes": [{"quote_id": q.get("quote_id"), "total": q.get("total"),
+                        "currency": q.get("currency"), "status": q.get("status")}
+                       for q in quotes],
+            "recent": [{"direction": m.get("direction"),
+                        "body": (m.get("body") or "")[:200]} for m in messages]}
+    brief, mode = "", "deterministic"
+    if rows["customer"].get("customer_id") and not DRY_RUN:
+        try:
+            out = glm("Write a <=6 line pre-takeover brief for sales staff "
+                      "from the JSON rows. Use ONLY the provided rows — "
+                      "cite [C] for customer, [F1..] facts, [Q1..] quotes. "
+                      "English. Output JSON: {\"brief\": \"...\"}",
+                      json.dumps(rows, ensure_ascii=False))
+            brief = (out.get("brief") or "").strip()
+            mode = "glm"
+        except Exception as e:
+            print(f"[k] glm brief failed -> deterministic: {e}", flush=True)
+    if not brief:
+        c = rows["customer"]
+        lines = [f"Customer: {c.get('name') or c.get('customer_id')} "
+                 f"(tier {c.get('tier')}, lang {c.get('language')}) [C]"]
+        lines += [f"Fact: {f} [F{i+1}]" for i, f in enumerate(rows["facts"])]
+        lines += [f"Quote: {q['quote_id']} {q['total']} {q['currency']} "
+                  f"({q['status']}) [Q{i+1}]"
+                  for i, q in enumerate(rows["quotes"])]
+        brief = "\n".join(lines) or "No data yet."
+    return {"brief": brief, "mode": mode, "rows": rows, "facts": facts}
 
 
 def _post(url: str, payload: dict, headers: dict | None = None, timeout: int = 60) -> dict:
@@ -788,7 +1265,9 @@ def classify(text: str) -> dict:
 def spec_answer(text: str) -> str | None:
     """RAG over the client knowledge base via the A3-Spec dify workflow
     (dify/dsl/spec_answer.yml). Returns None when unavailable so the caller
-    falls back to the deflect stub."""
+    falls back to the deflect stub. Trap #34 fix (session #16): the workflow
+    now emits [[KB_NOT_FOUND]] on KB misses — treat it as an honest miss
+    (None), never relay the marker to a buyer."""
     if not DIFY_SPEC_KEY:
         return None
     try:
@@ -797,7 +1276,11 @@ def spec_answer(text: str) -> str | None:
             "user": "glue-router"},
             headers={"Authorization": f"Bearer {DIFY_SPEC_KEY}"}, timeout=90)
         if res.get("data", {}).get("status") == "succeeded":
-            return res["data"]["outputs"].get("answer") or None
+            ans = res["data"]["outputs"].get("answer") or None
+            if ans and "[[KB_NOT_FOUND]]" in ans:
+                print("[a3-spec] KB miss marker -> honest miss", flush=True)
+                return None
+            return ans
     except Exception as e:
         print(f"[a3-spec] unavailable ({e})", flush=True)
     return None
@@ -1193,18 +1676,23 @@ async def x5_send(days: float = 30, short: bool = False):
 
 
 def _carbone_docx(data: dict) -> bytes:
-    """B4-1 render via carbone-ee docker (:8200 → in-container 4000).
+    """B4-1: quote render = generic docgen render over the quote template."""
+    return _carbone_doc(data, QUOTE_TEMPLATE, "quote_template.docx")
+
+
+def _carbone_doc(data: dict, template_path: Path, filename: str) -> bytes:
+    """Doc-Gen render via carbone-ee docker (:8200 → in-container 4000).
     carbone-ee v5 API is ASYNC: POST /template (multipart) → {templateId},
     POST /render/{templateId} {"data":…} → {renderId}, then GET
     /render/{renderId} returns the binary exactly ONCE (subsequent polls
     404). Traps honored: npm CE corrupts templates — docker only;
     convertTo:pdf is license-gated, so we render docx and convert here."""
-    tpl = QUOTE_TEMPLATE.read_bytes()
+    tpl = template_path.read_bytes()
     boundary = "----mjcxB4Boundary"
     part = (
         f"--{boundary}\r\n"
         "Content-Disposition: form-data; name=\"template\"; "
-        "filename=\"quote_template.docx\"\r\n"
+        f"filename=\"{filename}\"\r\n"
         "Content-Type: application/vnd.openxmlformats-officedocument."
         "wordprocessingml.document\r\n\r\n").encode() + tpl + \
         f"\r\n--{boundary}--\r\n".encode()
@@ -1385,6 +1873,108 @@ def _approve_followup(qid: str) -> str:
         pass
     print(f"[b6] {qid} approved -> sent to {buyer}", flush=True)
     return f"Sent. ({qid})"
+
+
+# ----------------------------- console B6 approvals (follow-up drafts) ------
+# Second door to the SAME authority as the WhatsApp "APPROVE Q-…" reply:
+# dashboard-first staff click Approve/Dismiss on the Quotes page. One
+# handler (_approve_followup), one truth — the console never re-implements
+# delivery. Reject = dismiss the DRAFT only; S5 quote status is a different
+# axis (deal outcome) and stays untouched.
+
+def _reject_followup(qid: str) -> str:
+    try:
+        items = _get(f"{SPINE_URL}/events?kind=followup_draft&limit=500")["items"]
+    except Exception as e:
+        return f"spine unreachable ({e})"
+    known = any(
+        (json.loads(e.get("detail_json") or "{}").get("quote_id") == qid)
+        for e in items)
+    if not known:
+        return f"No stored draft found for {qid}."
+    try:
+        _post(f"{SPINE_URL}/events",
+              {"kind": "followup_rejected",
+               "detail_json": json.dumps({"quote_id": qid,
+                                          "source": "console"})}, timeout=10)
+    except Exception as e:
+        return f"log failed ({e})"
+    print(f"[b6] {qid} draft dismissed from console", flush=True)
+    return "Dismissed."
+
+
+@app.get("/console/b6/drafts")
+def console_b6_drafts(limit: int = 100):
+    """Follow-up drafts (S8 events), one row per quote (newest wins) with
+    decision state — feeds the Quotes page approval panel."""
+    def _ev_qids(kind: str) -> set:
+        try:
+            return {json.loads(e.get("detail_json") or "{}").get("quote_id")
+                    for e in _get(f"{SPINE_URL}/events?kind={kind}&limit=500"
+                                  )["items"]}
+        except Exception:
+            return set()
+    try:
+        drafts = _get(f"{SPINE_URL}/events?kind=followup_draft&limit=500"
+                      )["items"]
+    except Exception as e:
+        raise HTTPException(502, f"spine unreachable: {e}")
+    sent, rejected = _ev_qids("followup_sent"), _ev_qids("followup_rejected")
+    out, seen = [], set()
+    for e in drafts:  # newest first
+        try:
+            d = json.loads(e.get("detail_json") or "{}")
+        except Exception:
+            continue
+        qid = d.get("quote_id")
+        if not qid or qid in seen or not d.get("draft"):
+            continue
+        seen.add(qid)
+        out.append({"quote_id": qid, "draft": d["draft"],
+                    "buyer_jid": d.get("buyer_jid") or "",
+                    "wa_card_sent": bool(d.get("drafted")),
+                    "ts": e.get("ts"),
+                    "status": "sent" if qid in sent else
+                              "rejected" if qid in rejected else "pending"})
+    for row in out:  # customer names, pending rows only, best-effort
+        if row["status"] != "pending":
+            continue
+        try:
+            q = _get(f"{SPINE_URL}/quotes/{row['quote_id']}")
+            row["customer_id"] = q.get("customer_id")
+            row["customer_name"] = _get(
+                f"{SPINE_URL}/customers/{q['customer_id']}").get("name")
+        except Exception:
+            pass
+    return {"items": out[:max(1, limit)]}
+
+
+@app.post("/console/b6/approve")
+async def console_b6_approve(request: Request):
+    """Send the stored draft verbatim — same handler as the WhatsApp
+    APPROVE reply, including its fail-closed paths (no buyer JID -> refusal)."""
+    try:
+        body = json.loads(await request.body())
+    except Exception:
+        raise HTTPException(400, 'body must be JSON {"quote_id": "Q-..."}')
+    qid = str(body.get("quote_id") or "").strip().upper()
+    if not re.fullmatch(r"Q-[A-Z0-9]+", qid):
+        raise HTTPException(400, "bad quote id")
+    result = await asyncio.to_thread(_approve_followup, qid)
+    return {"ok": result.startswith("Sent"), "result": result}
+
+
+@app.post("/console/b6/reject")
+async def console_b6_reject(request: Request):
+    try:
+        body = json.loads(await request.body())
+    except Exception:
+        raise HTTPException(400, 'body must be JSON {"quote_id": "Q-..."}')
+    qid = str(body.get("quote_id") or "").strip().upper()
+    if not re.fullmatch(r"Q-[A-Z0-9]+", qid):
+        raise HTTPException(400, "bad quote id")
+    result = await asyncio.to_thread(_reject_followup, qid)
+    return {"ok": "Dismissed" in result, "result": result}
 
 
 @app.post("/b6/tick")
@@ -2705,7 +3295,12 @@ def _extract_text(message: dict) -> str:
 
 
 def route(customer: dict, text: str, remote: str = "") -> str | None:
-    """A3-2 + Phase B. Returns the buyer-facing reply, or None for silence."""
+    """A3-2 + Phase B. Returns the buyer-facing reply, or None for silence.
+    CONVERSATION_CORE=v2 delegates the whole brain to glue/agent.py (the
+    v1 cascade below is FROZEN and stays the default until soak flips)."""
+    if cfg("CONVERSATION_CORE", "v1") == "v2":
+        import agent  # lazy: agent imports THIS module's frozen helpers
+        return agent.handle(customer, text, remote)
     # Obvious-noise gate (deterministic): keyboard mash, emoji-only, symbol
     # spam. The triage model wavers on these (SPAM 0.95 one run, OTHER 0.3
     # the next — O5-S8 flake) and low-confidence then escalates GIBBERISH to
@@ -2727,7 +3322,7 @@ def route(customer: dict, text: str, remote: str = "") -> str | None:
     if offer:
         about = offer.get("about") or ""
         if re.fullmatch(r"[A-Z]{2,3}-\d+", about) \
-                and not re.search(r"\b(DG-\d+|ATS-\d+|STS-\d+)\b", text.upper()):
+                and not _SKU_RE.search(text):
             qm = re.search(
                 r"\b(\d+)\s*(?:units?|pcs|pieces|sets?|unit|台|个|件)\b"
                 r"|^\s*(?:like |around |approx\.? |~)?(\d{1,4})\s*$",
@@ -2782,14 +3377,35 @@ def route(customer: dict, text: str, remote: str = "") -> str | None:
                 return tt(lang, "formal_offer")
             print(f"[thread] fulfilling pending offer about "
                   f"{offer.get('about')}", flush=True)
-            return (compose(
+            reply = compose(
                 "in your previous message you offered more information and "
                 "the buyer just accepted — DELIVER IT NOW from the facts: "
                 "concrete details, no hedging, no handoff, no 'let me "
                 "check'; end by inviting the next concrete step (quantity "
                 "for pricing, or their application)", lang, text,
                 facts=list(offer["facts"]) + _company_line(), remote=remote)
-                or tt(lang, "welcome"))
+            if reply:
+                return reply
+            # Guard rejected every generation (live 2026-08-26 22:52: the
+            # model padded DG-30 specs with numbers not in the fact list —
+            # right call) — but the old fallback was the 'welcome' CLOSING
+            # template, a goodbye mid-sale. Deliver deterministic facts
+            # instead: last-discussed SKU's catalog card, else the offer's
+            # own fact lines verbatim.
+            print("[thread] fulfillment guard-rejected -> deterministic "
+                  "facts", flush=True)
+            sku = (_THREAD.get(remote) or {}).get("last_sku")
+            if sku:
+                try:
+                    return _catalog_reply(
+                        _get(f"{SPINE_URL}/catalog/{sku}"), lang, text,
+                        remote)
+                except Exception:
+                    pass
+            facts = [f for f in offer.get("facts", []) if f]
+            if facts:
+                return "\n".join(f"• {f}" for f in facts)
+            return tt(lang, "welcome")
         # agreement with nothing pending: treat as light acknowledgment and
         # keep the door open rather than escalating small talk
         if th.get("greeted"):
@@ -2864,8 +3480,8 @@ def route(customer: dict, text: str, remote: str = "") -> str | None:
         # token OR a natural-name alias ("the ats panel" -> ATS-50). Buyers
         # rarely type SKUs; without aliasing they fall into RAG, whose
         # KB-miss behaviour is the fake "let me check" (traps #34/#37).
-        m = re.search(r"\b(DG-\d+|ATS-\d+|STS-\d+)\b", text.upper())
-        sku = m.group(1) if m else _alias_sku(text)
+        m = _SKU_RE.search(text)
+        sku = _sku_token(text) or _alias_sku(text)
         if sku:
             try:
                 return _catalog_reply(
@@ -2873,6 +3489,24 @@ def route(customer: dict, text: str, remote: str = "") -> str | None:
             except Exception as e:
                 print(f"[a3-spec] catalog lookup {sku} failed: {e}",
                       flush=True)
+        # Catalog-LINE question ("what models are there?"): the answer IS
+        # the S1 model list — deterministic facts, no RAG roulette, no
+        # escalation. Arms the offer so "DG-30" / "tell me more" continues
+        # the thread into the catalog answer.
+        if _match_any(text, _MODEL_LINE_RES):
+            print("[a3-spec] model-line question -> deterministic S1 list",
+                  flush=True)
+            line_facts = _company_line()
+            _set_offer(remote, "the product line", line_facts)
+            return (compose(
+                "the buyer asks which models/products you make — name the "
+                "FULL line concretely from the facts (each model with its "
+                "power rating where given), then ask ONE question about "
+                "their application or required power range; no invented "
+                "models, no generic claims beyond the facts",
+                lang, text, facts=line_facts, remote=remote)
+                or tt(lang, "capability").format(
+                    line=", ".join(MATERIALS) or "generator sets"))
         # Availability probe ("do you have kaolin?") with NO catalog hit:
         # answer the grounded negative plainly + pivot to the real line.
         # A human sales thread never stalls with a fake "let me check" —
@@ -2898,6 +3532,20 @@ def route(customer: dict, text: str, remote: str = "") -> str | None:
                                  "plainly 'not our line' + pivoted to the real "
                                  "line; demand signal for staff.\n")
             return reply
+        # Follow-up details ask with no product named ("i said i want the
+        # details and specifications"): RAG is stateless and answers "which
+        # product?" — amnesia mid-thread (live 2026-08-26 22:53). When the
+        # thread recently discussed ONE catalog SKU, that is the product.
+        last = (th or {}).get("last_sku")
+        if last and _match_any(text, _DETAIL_FOLLOWUP_RES):
+            try:
+                print(f"[a3-spec] follow-up details ask -> last SKU {last}",
+                      flush=True)
+                return _catalog_reply(
+                    _get(f"{SPINE_URL}/catalog/{last}"), lang, text, remote)
+            except Exception as e:
+                print(f"[a3-spec] last-SKU lookup {last} failed: {e}",
+                      flush=True)
         rag = spec_answer(text)
         if rag and not _looks_like_stall(rag):
             print("[a3-spec] answered from knowledge base", flush=True)
@@ -3070,6 +3718,28 @@ def route(customer: dict, text: str, remote: str = "") -> str | None:
             f"Urgency {cls.get('urgency')}, sentiment {cls.get('sentiment')} — "
             "always-human list, priority complaint.\n")
         return reply
+    # Bare-SKU rescue (live test 2026-08-26 "DG-30 lets say"): the triage
+    # app labels a bare model pick OTHER at conf ~0.4 — usually the buyer
+    # ANSWERING our own "which model?" question — and the low-confidence
+    # rule then hands a fully S1-grounded answer to a human. Same
+    # deterministic-gate philosophy as the pricing continuation: when the
+    # classifier admits doubt (conf < 0.7) and the message names an exact
+    # catalog SKU, the catalog answers. Unknown SKUs (lookup fails) and
+    # negative sentiment still escalate — S1 decides, the agent never
+    # guesses. Confident OTHER stays human: that is a real off-script
+    # business message (payment/legal/demos), not a product pick.
+    if intent == "OTHER" and cls.get("sentiment") != "negative" \
+            and float(cls.get("confidence") or 0) < 0.7:
+        sku = _sku_token(text)
+        if sku:
+            try:
+                item = _get(f"{SPINE_URL}/catalog/{sku}")
+                print(f"[a3] bare SKU pick '{sku}' under low-conf OTHER -> "
+                      f"deterministic catalog answer", flush=True)
+                return _catalog_reply(item, lang, text, remote)
+            except Exception as e:
+                print(f"[a3-rescue] catalog lookup {sku} failed: {e}",
+                      flush=True)
     # dial = closer: ONE clarifying question before giving an ambiguous
     # message to a human. Commits to nothing, so it stays inside the safety
     # envelope; once per thread, then the normal handoff applies.

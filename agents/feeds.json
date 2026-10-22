@@ -1,0 +1,7 @@
+{
+  "$comment": "Market Intelligence feed list (S7 config-as-code). Google News works natively; add rsshub/rss-bridge URLs for portals without feeds.",
+  "feeds": [
+    "https://news.google.com/rss/search?q=solar+panel&hl=en-US&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=tariff+import+export&hl=en-US&gl=US&ceid=US:en"
+  ]
+}

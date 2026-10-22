@@ -41,7 +41,7 @@ def _env_file() -> dict:
 
 
 ENV = {**_env_file(), **{k: v for k, v in os.environ.items()}}
-BASE = ENV["DIFY_BASE_URL"].rstrip("/")
+BASE = ENV.get("DIFY_BASE_URL", "").rstrip("/")
 KEY = ENV.get("DIFY_DATASET_API_KEY") or ""
 # high_quality (vector) needs a PAID zhipuai embedding model — this key is
 # glm-4-flash-only until Leonard tops up (GLM 1113 trap, see spike-log).

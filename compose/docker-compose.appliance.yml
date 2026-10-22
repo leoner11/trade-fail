@@ -42,9 +42,13 @@ services:
     restart: unless-stopped
 
   glue:
-    build: ../glue
+    build:
+      context: ..
+      dockerfile: glue/Dockerfile
     ports: ["127.0.0.1:8102:8102"]
     env_file: ../.env
+    volumes:
+      - ../spine/rules:/data/rules:ro
     environment:
       EVO_URL: http://evo:8080
       SPINE_URL: http://spine:8101

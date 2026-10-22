@@ -2177,3 +2177,390 @@ published.
 
 Gates after edits: e2e **13/13** · B4 **12/12** · email **12/12** · voice
 **PASS** · console build/lint clean (2 pre-existing warnings).
+
+### Session #15 cont. — model-line gate: "what models are there" answered from S1, not stalled
+
+Same evening, Leonard's live thread: "can i know more bout ur products,
+especially ur generator" got a good RAG answer; follow-up "what models are
+there" → SPEC_Q conf 0.95 → RAG stalled on the overview phrasing →
+repair alias=None → spec_stub + SPEC_Q escalation armed (spine conv #3).
+The model list IS S1 data — stalling on it is the fake-promise pattern
+again, just one layer deeper than #34.
+
+Fix, `glue/mock_responder.py`: `_MODEL_LINE_RES` deterministic detector
+(what/which models…, list/show your products, model lineup, 有哪些型号,
+model apa saja — plural/collective forms only, so "what model of engine"
+stays on normal spec paths) checked in SPEC_Q right after the SKU fast
+path → compose over `_company_line()` facts (names EVERY model from S1 +
+one steering question) + `_set_offer` armed so "DG-30"/"tell me more"
+continues into the catalog answer. No escalation on this path.
+
+Gate: **O5 auto 13/13** — new S12 pins "what models are there" → DG-30 +
+DG-100 present, zero stall/handoff phrases. Full board rerun after the
+edit: e2e 13/13 · email 12/12 · B4 12/12 · voice PASS · S9
+--expect-scheduled 4/4. NOTE: S9's draft step exhausts the SKU pool once
+every SKU has an S6 row — remedy is the test's own message (clear rows);
+also deleted the scheduled postiz entry by group UUID (#47) and zeroed
+the S6 table (all rows were today's gate artifacts). Glue :8102
+restarted via keepalive — fix LIVE.
+
+### Session #15 cont. 2 — "yes please" guard-kill cascade: SKU normalization + deterministic fulfillment + last-SKU memory
+
+Leonard's live thread 22:50–22:54, THREE stacked failures:
+
+1. "so i assume 30 kva is dg 30?" — buyers don't type hyphens. _SKU_RE
+   required "DG-30", so "dg 30" missed the catalog path → RAG → armed
+   offer "the topic just discussed" with facts=[RAG prose] (no real spec
+   numbers).
+2. "yes please" → agreement branch + fulfillment fired CORRECTLY, but
+   compose padded the spec list with numbers not in its weak fact list
+   ("8.2L/h", "Perkins 1106A-70TAG2") → voice guard rejected ×2 (guard
+   was RIGHT) → fallback `tt('welcome')` sent the BUYER A GOODBYE
+   ("You're welcome! ... message me any time") mid-sale.
+3. "i said i want the details and specifications" → offer popped,
+   stateless RAG answered "which product?" — thread amnesia.
+
+Fixes, `glue/mock_responder.py`:
+- `_SKU_RE` tolerates "dg 30"/"dg30" (`[- ]?`); `_sku_norm`/`_sku_token`
+  normalize to canonical "DG-30". Used by SPEC_Q fast path, bare-SKU
+  rescue, continuation guard. Result: "dg 30" hits S1 catalog → offer
+  armed with REAL spec numbers (80L/68dB/720kg...) → fulfillment guard
+  passes.
+- Fulfillment fallback is now deterministic facts: last-SKU catalog card,
+  else the offer's own fact lines verbatim — NEVER the 'welcome' closing
+  template.
+- `last_sku` breadcrumb set by `_catalog_reply`; SPEC_Q follow-up gate
+  (`_DETAIL_FOLLOWUP_RES`: details/specs/tell me more/详细介绍...) with
+  no product named → answer for last discussed SKU. Narrow by design —
+  "what's the warranty?" stays on RAG.
+
+Gates: **O5 auto 16/16** — S13 pins the exact live chain (hyphenless pick
+→ catalog card; "yes please" → 80L+68dB delivered, no goodbye) and S14
+the follow-up amnesia (→ DG-30 card). e2e 13/13 · email 12/12 · B4 12/12
+· S9 --expect-scheduled 4/4 (postiz + S6 test rows cleaned again) ·
+voice PASS on rerun (1-run variation flake, #14-documented). Glue :8102
+restarted via keepalive — fix LIVE.
+
+### Session #15 close — REVAMP decision: conversation core v2 (design doc)
+
+Live flake #6 of the evening (23:20 "hello bro, tell me more bout ur
+industry" → OTHER 0.85 → human flag; capability regexes don't know
+'bout/ur/industry' phrasing) was the straw: Leonard called off further
+v1 patching and greenlit a revamp. Decisions after review:
+
+- **Scope: brain transplant, organs stay.** One stateful tool-calling
+  agent loop (`glue/agent.py`) replaces the classify→regex→RAG→compose
+  cascade. calc/spine/escalation/console/evo/email/B6/n8n untouched.
+  RAG demoted from a layer to a tool (kb_search). dify stays (agent-core
+  scope, not core+drop-dify).
+- **Model: glm-4.5** (confirmed served by our endpoint, along with
+  4.6/4.7/5.x; current GLM_MODEL=glm-4.5-air). Benchmark vs glm-5.3-flash
+  in the gate phase.
+- **Design doc first:** `docs/design-conversation-core-v2.md` — shape,
+  tool list, grounding rules (digits ⊆ tool facts, calc-only arithmetic,
+  complaint pre-guard), S4-as-memory + agent_state column, autonomy-dial
+  mapping, CONVERSATION_CORE=v1|v2 flag, migration + acceptance (O5 with
+  flag=v2 + S15–S19 = tonight's flakes pinned verbatim), open questions.
+- **v1 is FROZEN from tonight** — new flakes become v2 scenarios, not
+  regexes. The one exception already in the tree: the capability-regex
+  industry addition (gated O5 16/16 after the edit, glue restarted).
+
+Evidence table (all six flakes + root causes) lives in the design doc —
+that's the revamp's justification record.
+
+### Session #15 (opener) — bare-SKU rescue: "DG-30 lets say" answered from S1, not escalated
+
+Leonard's live chatbot flake (2026-08-26): buyer replying "DG-30 lets say"
+(= answering OUR "which model?" question) triaged OTHER conf 0.4 → holding
+line + human flag mid-sale. Root cause: the deterministic S1 SKU answer only
+ran INSIDE intent==SPEC_Q; the documented "bare quantity+SKU reads OTHER"
+flake (comment at the pricing continuation) had no SKU-side counterpart.
+
+Fix — same deterministic-gate philosophy, `glue/mock_responder.py`:
+- `_SKU_RE`: the `DG-\d+|ATS-\d+|STS-\d+` token regex centralized (was
+  duplicated at the continuation guard + SPEC_Q fast path; now case-blind).
+- Bare-SKU rescue inserted before closer-clarify/final handoff: intent
+  OTHER + conf < 0.7 + sentiment != negative + exact SKU token present →
+  spine catalog lookup → `_catalog_reply` (same grounded path as SPEC_Q
+  hits; arms offer fulfillment; NO escalation — fully answered).
+- Unknown SKU (lookup 404) still escalates (never-guess intact); confident
+  OTHER still escalates (real off-script business — payment/legal/demo —
+  must not be swallowed by a product answer); negative sentiment still
+  escalates (complaint safety).
+
+Gates (after edit): **O5 auto 12/12** — new S11 ("DG-30 lets say" → DG-30
+catalog answer, no handoff phrases; classifier reproduced the live flake
+both runs, OTHER 0.4 and 0.6, rescue fired) + S11b (DG-9000 → 404 → holding
+line). e2e 13/13 · email 12/12 · B4 12/12 · voice PASS 8/8 · S9
+**--expect-scheduled 4/4**. Glue :8102 restarted via keepalive — fix LIVE
+(dry_run false).
+
+Trap #46 (B1 parse flake): one mid-gate rerun, S4's "official quotation
+PDF for 10 units of the ATS-50 panel" parsed action=clarify ("What size…
+STD or XL?") instead of quote ATS-50 STD ×10. One-off at temp 0 — stash-run
+against HEAD passed S4 while the changed code passed on rerun (the
+SKU-rescue diff cannot touch the PRICE_Q path). If it recurs: consider
+defaulting size when the material has exactly ONE size in S2.
+
+Trap #47 (postiz delete refinement, extends #6): dashboard
+`DELETE /posts/:group` keys on the GROUP UUID — get it from
+`GET /posts/:postId` → `.group`. Passing the public-API postId returns
+HTTP 200 `{'error': True}` and deletes NOTHING. `GET /posts` also demands
+non-optional startDate/endDate ISO strings (bare calls 400). S9 gate note:
+PLAIN mode is structurally red whenever a postiz key + connected channel
+exist (it asserts "push skipped — no key/channels"); --expect-scheduled is
+the mode of record in that world. Neither mode cleans up its scheduled
+post — deleted both by group after this session's runs; posts-in-range 0.
+Nothing can publish.
+
+### Session #16 — conversation core v2 BUILD: open questions resolved + trap #48
+
+Build-time decisions per docs/design-conversation-core-v2.md §open
+questions (one line + rationale each):
+
+1. **Offer/PDF fulfillment → deterministic post-tool handler.** Tool layer
+   arms `agent_state.offer_pending`; a pre-agent pure-agreement check
+   (reuses v1's `_AGREEMENT_RES` verbatim) fulfills WITHOUT the loop —
+   PDF via b4_deliver, else catalog card / offer facts verbatim. Keeps
+   "yes please" off the LLM roulette entirely (tonight's guard-kill
+   cascade class).
+2. **dify #34 NOT_FOUND marker → IN scope, token `[[KB_NOT_FOUND]]`.**
+   spec workflow emits the marker on KB misses; kb_search returns
+   `found:false` → agent escalates honestly or pivots to catalog. v2
+   drops the `_looks_like_stall` repair hack; v1 (frozen) keeps it.
+3. **History window N=20 messages**, trimmed oldest-first (~2–3k tokens
+   per turn at WhatsApp lengths). Raise only on measured token pressure.
+4. **`_THREAD` readers = v1 cascade only** (route/compose/_set_offer/
+   _catalog_reply/_remember); SLA tick reads spine, closer-clarify moves
+   to agent_state in v2. v1 keeps `_THREAD` frozen and dies with the
+   cascade at deletion time — nothing else to move.
+5. **Model default `glm-4.5-air`, benchmark vs `glm-4.5-flash`** — NOT
+   the design doc's glm-4.5 vs glm-5.3-flash: see trap #48. Leonard can
+   buy a resource pack and re-benchmark by flipping CONVERSATION_MODEL.
+
+Trap #48 (model billing ≠ served list): the GLM endpoint AUTHORIZES
+glm-4.5/4.6/4.7/5.3/5.3-flash (design doc: "confirmed served") but the
+account has NO resource pack for any premium tier — every call fails
+HTTP 429 code 1113 (余额不足或无可用资源包). Billable + tool-calling
+today: glm-4.5-air, glm-4.5-flash, glm-4-flash. Lesson: probe a 1-token
+call per candidate model BEFORE committing a default; "served" in the
+model list says nothing about the billing plan.
+
+6. **Unknown product asks (Leonard's mid-build call): natural answer +
+   background flag, NOT a buyer-facing handoff.** "Not our line +
+   pivot" mimics a real salesperson; forcing the neutral holding line
+   there read cold. catalog_lookup not_found now arms a silent
+   demand-signal escalation for staff while the agent answers
+   naturally (v1's kaolin pattern). S11b pin is core-conditional
+   (v2 = natural negative; frozen v1 keeps its holding-line contract).
+   Service asks ("do you do tours?") still escalate neutrally.
+
+### Session #16 — conversation core v2 BUILT + GATED (all green)
+
+Brain transplant per docs/design-conversation-core-v2.md; organs untouched.
+
+**Built:**
+- `spine/spine_api.py`: `conversations.agent_state_json` column
+  (PRAGMA-guarded live migration, social_images pattern) + GET/PUT
+  `/conversations/{cid}/agent_state` + `/conversations/by_jid/{jid}`
+  (state resolve without create). Spine restarted via keepalive.
+- `dify/dsl/spec_answer.yml` + live app: **trap #34 CLOSED** — KB misses
+  now emit the structured marker `[[KB_NOT_FOUND]]` (prompt + sanitize
+  node patched via console_api, published, live-verified on/off-KB,
+  exported back to git). `spec_answer()` in glue treats the marker as an
+  honest miss (None) so frozen v1 can never relay the marker.
+- `dify/prompts/agent_core_v2.md`: agent system prompt (facts ceiling,
+  calc-only arithmetic, tool discipline, neutral-escalation contract,
+  grounded negatives). Loaded by glue/agent.py; appended to voice guide.
+- `glue/agent.py` (~840 lines): pre-guards (noise verbatim, complaint/
+  anger regex net PRE-model, spam, pure-agreement offer fulfillment —
+  deterministic, no LLM) → ONE tool-calling loop (max 4 rounds) with
+  catalog_lookup / list_models / kb_search / price_quote / escalate →
+  post-guards (digits ⊆ tool facts ∪ buyer's own ∪ already-guarded
+  thread numbers; link guard; quotes exact-mode; one repair round then
+  DETERMINISTIC tool-fact fallback — never a wrong-template goodbye) →
+  state persisted to spine agent_state (restart-proof). Alias/SKU
+  normalization, calc chain, S5/S4/B4/escalation all MOVED-not-rewritten
+  (imported from mock_responder). price_quote enforces S2 vocab +
+  internal_only no-leak before calc; escalate is terminal + verbatim.
+  Autonomy: assistant = price_quote withheld (system contract), closer =
+  prompt variant + clarify budget in agent_state. Offline gates
+  (DRY_RUN=1, no S4 mirror) get continuity from a process-local turn
+  cache — inert whenever spine has rows.
+- `glue/mock_responder.py`: route() delegates to agent.handle under
+  CONVERSATION_CORE=v2 (lazy import; v1 cascade untouched below it).
+- `tests/test_o5_acceptance.py`: reset_thread() clears BOTH cores'
+  state; **S15–S19 pin 2026-08-26's six live flakes verbatim**
+  (evidence table → expected behaviors); S11b core-conditional
+  (v2 natural negative vs frozen v1 holding line). S17 uses the live
+  verbatim "so i assume 30 kva is dg 30?" (the bare short form is
+  <50% letters → noise gate correctly silences it — pinned the real
+  message, not the artifact).
+
+**Benchmark (O5 v2, gate results + latency, not vibes):**
+- glm-4.5-air: **22/22**, avg 6.5s/msg, max 14.5s ← PICKED (default)
+- glm-4.5-flash: 19/22, avg 23.2s, max 61.4s — failed S7 discipline
+  (engaged the discount ask) and S17 (tool card in context, model still
+  said "I don't have the exact specifications").
+
+**Gate board (full rerun, organs + dify touched):** e2e 13/13 ·
+**O5 v1 22/22** · **O5 v2 22/22** (glm-4.5-air) · B4 12/12 · email 12/12 ·
+voice PASS · **O2 quiz 20/20, 0 fabrications** (DSL patch verified
+harmless to grounded answers) · S9 --expect-scheduled 4/4 (scheduled
+postiz entry deleted by group UUID #47, S6 zeroed — nothing can
+publish). O3 backtest untouched (example mode). Console untouched.
+
+**Live:** .env CONVERSATION_CORE=v2 (line 56) · glue :8102 restarted via
+keepalive, dry_run false — SOAK BEGINS (Leonard's phone = the live
+check; repeat tonight's six flakes verbatim). v1 stays in-tree as the
+fallback: flip the env line + let keepalive revive = 30s rollback.
+Default flips in code only after one clean soak week; v1 cascade
+deletion only after that.
+
+Dev notes: zsh `echo ===` aborts compound commands (equals-expansion —
+quote your separators); one O5 v1 rerun stalled ~20 min inside a GLM
+socket read (slow-trickle defeats urlopen timeouts; transient API
+brownout, fast on retry) — background+poll is the resilient gate-run
+pattern. The 3 modified working-tree files from session #15 remain
+uncommitted alongside this session's changes — commit is Leonard's call.
+
+### Session #16 addendum — B6 follow-up cron: FIRST LIVE-FIRE VERIFIED
+
+Leonard's phone, 2026-08-27 12:04 WIB (05:04 UTC): n8n clock fired
+/b6/tick unprompted → 8 follow-up drafts for 48h-old sent quotes,
+delivered to STAFF WhatsApp with APPROVE instructions, one LLM draft
+each (~70s total), language per S3 customer record (id/en mix), S8
+followup_draft events armed once (idempotent — re-ticks skip them).
+
+APPROVE Q-E6603E drill → "draft has no buyer JID recorded" = FAIL-CLOSED
+BY DESIGN: gate quotes sit under seeded customers (cus_new_001 Test
+Buyer) whose S3 rows have wa_jid='' — the approver refuses rather than
+guess a destination (same never-guess rule as everywhere). Q-AFCDFB
+(Leonard's live soak quote) carries his real JID and would deliver.
+Operational note: seeded drafts point at placeholder numbers
+(6281234567890) — do not approve those; future gate runs keep feeding
+new sent-quotes under seed customers (48h staff-draft lag), cleanup of
+test-artifact quotes offered to Leonard. No code changed.
+
+### Session #16 addendum 2 — console B6 approvals: follow-up drafts clickable on the dashboard
+
+Leonard's ask: staff who dislike approving via WhatsApp draft cards
+should have a dashboard door. Built as a SECOND door to the SAME
+authority — one handler, one truth:
+
+- Glue (`mock_responder.py`): `GET /console/b6/drafts` (S8 events, one
+  row per quote, newest draft wins, state = pending/sent/rejected via
+  followup_sent/followup_rejected events, customer names best-effort);
+  `POST /console/b6/approve` → reuses `_approve_followup` verbatim
+  (incl. the fail-closed no-buyer-JID refusal); `POST /console/b6/reject`
+  → `_reject_followup`: logs S8 followup_rejected, S5 quote status
+  UNTOUCHED (dismissal ≠ deal outcome); tick idempotency unaffected
+  (drafts with text are already in `seen`). All bearer-gated.
+- Console: QuotesPage — pending drafts get a "follow-up" badge in the
+  list; the detail panel shows the draft VERBATIM (staff approve the
+  exact words) + Approve & send now / Dismiss + result line; no-JID
+  rows show the seed-data warning upfront. glue.ts b6Drafts/approve/
+  reject.
+- Stamp: image rebuilt, `console-stamp` recreated with identical run
+  args (127.0.0.1:8090+80→80, bridge). NOTE: container is NOT
+  compose-managed (`docker rm -f console-stamp && docker run -d --name
+  console-stamp -p 127.0.0.1:8090:80 -p 127.0.0.1:80:80
+  trade-agent-console` after `docker compose -f
+  compose/docker-compose.appliance.yml build console`) — plain `up -d
+  console` spawns a name-clashing twin that cannot bind :8090.
+
+Verified: drafts list (names/states) · approve on no-JID draft → exact
+fail-closed refusal · reject flips state · unknown ID refused · no
+bearer → 401 · Q-AFCDFB left pending as Leonard's live drill (approve
+in dashboard → follow-up lands on his phone). Gates after the edit:
+console build + lint (2 pre-existing warnings only) · e2e 13/13 · B4
+12/12 · email 12/12 · voice PASS (route() untouched → O5/S9/O2 not in
+scope). Glue restarted via keepalive.
+
+### Session #16 addendum 3 — trap #49: compose `up -d console` shadowed the host spine (empty-dashboard incident)
+
+Leonard reported "no quotes or follow-ups on :5173". Diagnosis: the
+previous addendum's stamp rebuild ran `docker compose -f
+compose/docker-compose.appliance.yml up -d console` — compose dragged up
+DEPENDENCY containers trade-agent-spine-1 + trade-agent-glue-1. The
+spine container publishes 127.0.0.1:8101->8101, and its binding is MORE
+SPECIFIC than the host uvicorn's *:8101 — so localhost traffic (console
+dev server, glue, curls) silently went to the CONTAINER, whose
+/app/spine.db is an isolated/stale copy. Symptom: :5173 showed empty
+quotes/threads/events while the repo DB (checked via sqlite3) had all
+39 followup drafts. Health tells: `"store":"/app/spine.db"` = container,
+repo path = host uvicorn.
+
+Trap #49: on the appliance compose, `up -d <one-service>` starts its
+dependency graph — host-uvicorn organs (calc/spine/glue) must NEVER be
+shadowed. The console stamp is NOT compose-managed anyway (running as
+`console-stamp` via docker run): correct rebuild = `docker compose -f
+compose/docker-compose.appliance.yml build console` then recreate
+console-stamp by hand. If a trade-agent-{spine,calc,glue}-N container
+ever appears in docker ps: `docker rm -f` it — the host uvicorns +
+keepalive are the organs of record. Post-fix verify: /health store path
+= repo, 26 drafts via :5173 proxy, quotes + 24 threads visible. Glue
+never restarted (its :8102 host binding stayed intact — only spine was
+shadowed).
+
+### Session #17 — 2026-09-14 — full cold start + console hookup of the four API-only agents (+ intel-digest born-dead fix)
+
+Goal: "hook it up" — the 09-08 platform agents that were API-only
+(Positioning, Market Intel, Doc-Gen, Procurement) get console surfaces.
+
+- Cold start first (runbook order): colima → evo/evo-postgres (WhatsApp
+  `mjcx-test` still connected, no QR) + dify 15ct + carbone + n8n +
+  postiz(compose) + console-stamp → uvicorns ×3 via keepalive (now also
+  a hub project process, persist+restart) → vite :5173 (hub
+  `console-dev`). evo's restart policy had drifted to `no` — back to
+  `unless-stopped` (runbook value). chatwoot auto-started with the
+  daemon (old restart policy); left running, off by design.
+- Console: PositioningPage / IntelPage / ProcurementPage (runtime nav,
+  agent ids positioning/market-intel/supplier) + DocGenPanel in
+  QuoteDetail; api clients positioningApi/intelApi/docgenApi (+spine
+  intel/suppliers/POs/approveCatalogDraft, CatalogItem.status);
+  domain PO_TONE/INTEL_TONE/CATALOG_TONE; i18n + routes. `npm run
+  build` green.
+- Live drills: positioning full loop (3 listings → memo w/ [L1..L3] →
+  promote SOLAR-550-BI-HALF → PROPOSED → approve → live); intel 2
+  feeds/60 new + GLM digest 20 cited; procurement supplier+item+
+  PO-80F5A0 (500×0.29=145.00) → approved + po_status S8; docgen
+  PRO-Q-0BF603.docx rendered+downloaded; entitlement drill end-to-end
+  (license issue → nav hide ×6 → glue 403 "not in your plan" → spine
+  reads open → license.json + license.seen.json removed → open).
+
+**New trap #50 — entitlement LICENSE_SECRET is os.environ-only.**
+glue `cfg()` falls back to the repo .env; `entitlement._env_secret()`
+does NOT. Host-run glue without the exported secret silently
+verify-fails → mode "open" (back-compat) even with a valid
+license.json sitting in the repo root. Drill symptom: license present,
+curl /console/license says licensed:false. Fix during drills: export
+LICENSE_SECRET into the uvicorn env (mind trailing newline when
+echoing from a file — first attempt had "\n" in the HMAC key).
+Client boxes unaffected (compose env_file). Verify-failure landing on
+OPEN is also a fail-open hole → security backlog.
+
+**New trap #51 — silent gate skips hide born-dead endpoints.**
+`GET /console/intel/digest` NEVER worked: its body was copy-paste
+corruption from positioning_analyze (referenced undefined lst/inp/det,
+would have returned positioning-shaped JSON) → UnboundLocalError 500
+on first real call — which was the new UI, a week after the gate
+passed 10/10. Root cause of the false green: the gate's live check
+wraps in try/except and prints "(live glue check skipped: …)" on ANY
+error. Fixed both: endpoint rewritten to its documented contract
+(GLM summary citing existing [I<id>]s; unknown citations rejected →
+deterministic fallback; returns {digest,item_ids,mode}), and the test
+now reads CONSOLE_TOKEN (env, else repo .env), attaches the bearer,
+and FAILS on bad payload → intel gate 11/11 with a real live check.
+Rule going forward: when the endpoint is expected up, live-check
+errors must fail the gate, not skip.
+
+- Also: spine `/catalog` list SELECT now includes `status` (was
+  sku,name,category — PROPOSED drafts invisible to clients; additive,
+  gate re-run green); duplicate `POST /console/positioning/promote`
+  removed (2nd registration shadowed since birth); manifest docgen
+  routes [] → ["/console/docgen"] (truth).
+- Gates after edits: manifest 11/11 · entitlements 22/22 · positioning
+  8/8 · intel 11/11 · procurement 13/13 · customer knowledge 12/12 ·
+  docgen 7/7 (+1 skip) · build green. Handoff:
+  HANDOFF-2026-09-14.md; NEXT_SESSION_PROMPT.md rewritten.

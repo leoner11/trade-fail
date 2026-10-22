@@ -52,6 +52,7 @@ export interface CatalogItem {
   sku: string
   name: string
   category?: string | null
+  status?: string | null
 }
 
 export interface CatalogDetail extends CatalogItem {
@@ -150,6 +151,52 @@ export const spine = {
       `/spine/conversations/${cid}/status`,
       { method: 'POST', body: JSON.stringify({ status }) },
     ),
+  // Customer Knowledge (platform plan Phase 3): agent/staff CRM memory
+  listFacts: (cid: string) =>
+    apiFetch<{ items: CustomerFact[] }>(`/spine/customers/${cid}/facts`),
+  deleteFact: (cid: string, fid: number) =>
+    apiFetch<{ deleted: boolean }>(
+      `/spine/customers/${cid}/facts/${fid}`,
+      { method: 'DELETE' },
+    ),
+  // ---- S9 intel (Market Intelligence) ----
+  listIntel: (limit = 100, kind = '') =>
+    apiFetch<ListResp<IntelItem>>(
+      `/spine/intel/items?limit=${limit}${kind ? `&kind=${kind}` : ''}`,
+    ),
+  // ---- S12 procurement (Supplier & Procurement) ----
+  listSuppliers: () => apiFetch<ListResp<Supplier>>('/spine/suppliers'),
+  addSupplier: (inp: SupplierIn) =>
+    apiFetch<{ supplier_id: number }>('/spine/suppliers', {
+      method: 'POST',
+      body: JSON.stringify(inp),
+    }),
+  listSupplierItems: (sid: number) =>
+    apiFetch<ListResp<SupplierItem>>(`/spine/suppliers/${sid}/items`),
+  addSupplierItem: (sid: number, inp: SupplierItemIn) =>
+    apiFetch<{ item_id: number }>(`/spine/suppliers/${sid}/items`, {
+      method: 'POST',
+      body: JSON.stringify(inp),
+    }),
+  listPOs: (status = '', overdue = false) =>
+    apiFetch<ListResp<PurchaseOrder>>(
+      `/spine/purchase-orders?${status ? `status=${status}&` : ''}${overdue ? 'overdue=1' : ''}`,
+    ),
+  createPO: (inp: POIn) =>
+    apiFetch<{ po_id: string; total: number; status: string }>('/spine/purchase-orders', {
+      method: 'POST',
+      body: JSON.stringify(inp),
+    }),
+  setPOStatus: (pid: string, status: POStatus) =>
+    apiFetch<{ po_id: string; status: string }>(`/spine/purchase-orders/${pid}/status`, {
+      method: 'POST',
+      body: JSON.stringify({ status }),
+    }),
+  // Positioning drafts land here as PROPOSED; staff approval makes them quotable
+  approveCatalogDraft: (sku: string) =>
+    apiFetch<{ ok: boolean; sku: string }>(`/spine/catalog/${encodeURIComponent(sku)}/approve`, {
+      method: 'POST',
+    }),
 }
 
 export interface ThreadRow {
@@ -177,4 +224,96 @@ export interface ThreadMsg {
 export interface ThreadDetail {
   conversation: ThreadRow
   items: ThreadMsg[]
+}
+
+export interface CustomerFact {
+  id: number
+  fact: string
+  source_message_id: number | null
+  confidence: number
+  source: 'agent' | 'staff'
+  ts: string
+}
+
+export interface IntelItem {
+  id: number
+  ts: string
+  source: string
+  url: string
+  title: string
+  summary: string
+  kind: 'news' | 'tariff' | 'price_watch' | string
+  status?: string | null
+}
+
+export interface Supplier {
+  id: number
+  name: string
+  contact: string
+  terms: string
+  lead_time_days: number
+  notes: string
+}
+
+export interface SupplierIn {
+  name: string
+  contact?: string
+  terms?: string
+  lead_time_days?: number
+  notes?: string
+}
+
+export interface SupplierItem {
+  id: number
+  supplier_id: number
+  sku: string
+  description: string
+  price: number
+  currency: string
+  moq: number
+  capability_note: string
+}
+
+export interface SupplierItemIn {
+  sku?: string
+  description?: string
+  price: number
+  currency?: string
+  moq?: number
+  capability_note?: string
+}
+
+export type POStatus =
+  | 'draft'
+  | 'approved'
+  | 'sent'
+  | 'confirmed'
+  | 'shipped'
+  | 'received'
+  | 'cancelled'
+
+export interface POLine {
+  sku?: string
+  description?: string
+  qty: number
+  price: number
+}
+
+export interface PurchaseOrder {
+  po_id: string
+  supplier_id: number
+  quote_id: string | null
+  lines_json: string
+  total: number
+  currency: string
+  status: POStatus
+  promised_date: string | null
+  created_at?: string
+}
+
+export interface POIn {
+  supplier_id: number
+  lines: POLine[]
+  quote_id?: string
+  promised_date?: string
 }

@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react'
 import { Search } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
-import { glueApi } from '../../api/glue'
+import { customerKnowledgeApi, glueApi } from '../../api/glue'
 import { spine } from '../../api/spine'
-import type { CustomerRow } from '../../api/spine'
+import type { CustomerFact, CustomerRow } from '../../api/spine'
 import { Button } from '../../components/ui/Button'
 import { DataTable } from '../../components/ui/DataTable'
 import type { Column } from '../../components/ui/DataTable'
@@ -211,6 +211,8 @@ function CustomerDetail({
         </div>
       </SectionPanel>
 
+      <CustomerKnowledgePanel cid={customer.customer_id} />
+
       <p className="text-caption text-text-muted">
         How pricing uses this: buyer messages in → spine resolves who they are (S3,
         including this tier) → calc multiplies the quote by S2's{' '}
@@ -218,6 +220,80 @@ function CustomerDetail({
         Tier changes land in the audit log (<span className="mono text-[13px]">tier_change</span> events).
       </p>
     </div>
+  )
+}
+
+function CustomerKnowledgePanel({ cid }: { cid: string }) {
+  const facts = useAsync(() => spine.listFacts(cid), [cid])
+  const [brief, setBrief] = useState<{
+    brief: string
+    mode: 'glm' | 'deterministic'
+  } | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  async function generate() {
+    if (loading) return
+    setLoading(true)
+    setErr(null)
+    try {
+      setBrief(await customerKnowledgeApi.brief(cid))
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function remove(fact: CustomerFact) {
+    return spine.deleteFact(cid, fact.id).then(() => facts.retry())
+  }
+
+  return (
+    <SectionPanel title="Customer Knowledge" bodyClassName="p-4 space-y-3">
+      {facts.loading && <p className="text-caption text-text-muted">Loading memory…</p>}
+      {facts.error && (
+        <GateBanner tone="danger" title="Memory unavailable" meta={facts.error} />
+      )}
+      {facts.data && facts.data.items.length === 0 && (
+        <p className="text-caption text-text-muted">
+          No memory yet — the agent writes durable facts (each cited to the
+          message it came from) as it chats.
+        </p>
+      )}
+      {facts.data && facts.data.items.length > 0 && (
+        <ul className="space-y-1">
+          {facts.data.items.map((f) => (
+            <li key={f.id} className="flex items-start justify-between gap-2">
+              <span className="text-body text-text-primary">
+                <span className="mr-2 text-caption text-text-secondary">[{f.source}]</span>
+                {f.fact}
+              </span>
+              <button
+                onClick={() => remove(f)}
+                aria-label="Delete fact"
+                className="text-caption text-text-secondary transition-colors hover:text-text-primary"
+              >
+                ✕
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex justify-end">
+        <Button variant="secondary" size="sm" onClick={generate} loading={loading}>
+          Generate takeover brief
+        </Button>
+      </div>
+      {err && <GateBanner tone="danger" title="Brief failed" meta={err} />}
+      {brief && (
+        <pre className="whitespace-pre-wrap rounded-md border border-line bg-surface-subtle p-3 text-caption text-text-primary">
+          {brief.brief}
+          {'\n\n'}
+          <span className="text-text-secondary">[{brief.mode} mode]</span>
+        </pre>
+      )}
+    </SectionPanel>
   )
 }
 

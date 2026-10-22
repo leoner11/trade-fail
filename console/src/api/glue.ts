@@ -188,6 +188,33 @@ export const glueApi = {
       `/glue/console/threads/${cid}/reply`,
       { method: 'POST', body: JSON.stringify({ content }) },
     ),
+  // B6 follow-up drafts — second door to the WhatsApp APPROVE authority
+  b6Drafts: () => apiFetch<B6DraftsResp>('/glue/console/b6/drafts'),
+  b6Approve: (quoteId: string) =>
+    apiFetch<{ ok: boolean; result: string }>('/glue/console/b6/approve', {
+      method: 'POST',
+      body: JSON.stringify({ quote_id: quoteId }),
+    }),
+  b6Reject: (quoteId: string) =>
+    apiFetch<{ ok: boolean; result: string }>('/glue/console/b6/reject', {
+      method: 'POST',
+      body: JSON.stringify({ quote_id: quoteId }),
+    }),
+}
+
+export interface B6Draft {
+  quote_id: string
+  draft: string
+  buyer_jid: string
+  wa_card_sent?: boolean
+  ts?: string
+  status: 'pending' | 'sent' | 'rejected'
+  customer_id?: string
+  customer_name?: string | null
+}
+
+export interface B6DraftsResp {
+  items: B6Draft[]
 }
 
 export interface InboxConversation {
@@ -294,4 +321,140 @@ export interface GatesSummary {
   go_live: GatePart & { go_live?: boolean }
   whatsapp: { found: boolean; state?: string }
   postiz_key_set: boolean
+}
+
+// ---- license & entitlements (platform plan Phase 1) ----
+export interface LicenseState {
+  licensed: boolean
+  mode: 'open' | 'licensed' | 'grace' | 'expired'
+  client: string | null
+  appliance_id: string | null
+  agents: string[]
+  trial: boolean
+  expires_at: string | null
+  grace_until: string | null
+  detail: string
+}
+
+export const licenseApi = {
+  state: () => apiFetch<LicenseState>('/glue/console/license'),
+}
+
+export interface CustomerBrief {
+  brief: string
+  mode: 'glm' | 'deterministic'
+  rows: Record<string, unknown>
+  facts: { id: number; fact: string; source: string }[]
+}
+
+export const customerKnowledgeApi = {
+  brief: (cid: string) =>
+    apiFetch<CustomerBrief>(`/glue/console/customers-facts/brief/${cid}`),
+}
+
+export interface AgentRow {
+  id: string
+  name_en: string
+  name_zh: string
+  tier: 'market' | 'ops'
+  status: 'available' | 'roadmap'
+  bundle: string | null
+  licensed: boolean | null
+  onboard: string[]
+}
+
+export interface AgentsState {
+  mode: 'open' | 'licensed' | 'grace' | 'expired'
+  agents: AgentRow[]
+}
+
+export const agentsApi = {
+  list: () => apiFetch<AgentsState>('/glue/console/agents'),
+}
+
+// ---- Positioning (marketplace listings → memo + catalog drafts) ----
+
+export interface PositioningListing {
+  title: string
+  price?: number
+  url?: string
+  notes?: string
+}
+
+export interface PositioningDraft {
+  sku: string
+  name: string
+  specs?: Record<string, string>
+  moq?: number
+}
+
+export interface PositioningResult {
+  memo: string
+  drafts: PositioningDraft[]
+  price_band: { min: number; max: number; median: number } | null
+  memo_path: string
+}
+
+export const positioningApi = {
+  analyze: (category: string, listings: PositioningListing[]) =>
+    apiFetch<PositioningResult>('/glue/console/positioning/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ category, listings }),
+    }),
+  promote: (drafts: PositioningDraft[]) =>
+    apiFetch<{ promoted: { sku: string; status: string }[] }>(
+      '/glue/console/positioning/promote',
+      { method: 'POST', body: JSON.stringify({ drafts }) },
+    ),
+}
+
+// ---- Market Intelligence ----
+
+export interface IntelDigest {
+  digest: string
+  item_ids: number[]
+  mode: 'glm' | 'deterministic' | string
+}
+
+export const intelApi = {
+  fetchFeeds: () =>
+    apiFetch<{ feeds: number; new_items: number }>('/glue/console/intel/fetch', {
+      method: 'POST',
+    }),
+  digest: (hours: number) =>
+    apiFetch<IntelDigest>(`/glue/console/intel/digest?hours=${hours}`),
+}
+
+// ---- Doc-Gen (carbone render from a saved S5 quote) ----
+
+export type DocGenKind = 'invoice' | 'packing_list' | 'proforma'
+
+export interface DocGenResult {
+  ok: boolean
+  doc_id: string
+  kind: DocGenKind
+  filename: string
+  docx_base64: string
+}
+
+export const docgenApi = {
+  render: (kind: DocGenKind, quoteId: string) =>
+    apiFetch<DocGenResult>('/glue/console/docgen/render', {
+      method: 'POST',
+      body: JSON.stringify({ kind, quote_id: quoteId }),
+    }),
+}
+
+export function downloadDocx(res: DocGenResult): void {
+  const bytes = Uint8Array.from(atob(res.docx_base64), (c) => c.charCodeAt(0))
+  const url = URL.createObjectURL(
+    new Blob([bytes], {
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    }),
+  )
+  const a = document.createElement('a')
+  a.href = url
+  a.download = res.filename
+  a.click()
+  URL.revokeObjectURL(url)
 }
